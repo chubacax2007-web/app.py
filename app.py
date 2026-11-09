@@ -29,6 +29,19 @@ active_pool_session = {
     "start_timestamp": None
 }
 
+# Estado en tiempo real del Smartwatch IoT (ESP32 por Wi-Fi)
+smartwatch_live_state = {
+    "connected": False,
+    "hand": "Izquierda (Left)",
+    "is_left": True,
+    "battery": 100,
+    "uptime_sec": 0,
+    "elbow_angle": 88,
+    "shoulder_angle": 55,
+    "force_n": 425,
+    "last_seen": 0
+}
+
 def get_default_db():
     return {
         "admins": [
@@ -157,11 +170,9 @@ def load_users():
         try:
             with open(USERS_FILE, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
-                # Asegurar que existan todas las llaves nuevas sin perder usuarios registrados
                 for key in ["admins", "coaches", "athletes", "routines", "sessions"]:
                     if key not in loaded:
                         loaded[key] = default_data[key]
-                # Asegurar que las cuentas demo solicitadas para evaluación siempre estén disponibles
                 for role_key in ["admins", "coaches", "athletes"]:
                     existing_emails = {u["email"].lower() for u in loaded[role_key]}
                     for default_u in default_data[role_key]:
@@ -223,7 +234,6 @@ HTML_TEMPLATE = """
         }
         .tab-btn.active { color: #0284c7; border-bottom: 3px solid #0284c7; font-weight: 800; }
         .tab-btn { color: #64748b; border-bottom: 3px solid transparent; }
-        /* Tooltips interactivos */
         .tooltip-box { display: none; }
         .tooltip-trigger:hover .tooltip-box { display: block; }
     </style>
@@ -233,7 +243,6 @@ HTML_TEMPLATE = """
     <!-- MODAL DE AUTENTICACIÓN, REGISTRO CON VALIDACIÓN Y RECUPERACIÓN DE CUENTA -->
     <div id="auth-modal" class="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-50 flex items-center justify-center p-4">
         
-        <!-- Pantalla de Bienvenida -->
         <div id="login-screen-welcome" class="login-hero-bg rounded-[2.5rem] max-w-sm w-full h-[580px] flex flex-col justify-between p-8 text-center text-white shadow-2xl border border-white/10 relative">
             <div class="pt-8">
                 <div class="text-2xl font-black tracking-widest text-white">SWiiT<span class="text-sky-400">room</span></div>
@@ -250,7 +259,6 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Formulario Login / Registro / Recuperación -->
         <div id="login-screen-form" class="clean-card p-8 rounded-3xl max-w-md w-full shadow-2xl border-slate-200 hidden space-y-4">
             <div class="flex justify-between items-center border-b pb-3">
                 <span id="form-main-title" class="text-lg font-black text-slate-900">Iniciar Sesión</span>
@@ -260,11 +268,10 @@ HTML_TEMPLATE = """
             <div id="auth-error-box" class="bg-rose-50 border border-rose-200 text-rose-700 px-3 py-2 rounded-xl text-xs font-bold hidden"></div>
             <div id="auth-success-box" class="bg-emerald-50 border border-emerald-200 text-emerald-700 px-3 py-2 rounded-xl text-xs font-bold hidden"></div>
 
-            <!-- FORMULARIO LOGIN / REGISTRO -->
             <form id="auth-form" onsubmit="handleAuthSubmit(event)" class="space-y-3">
                 <div id="field-name-container" class="hidden">
                     <label class="block text-xs font-bold text-slate-700 mb-1">Nombre Completo</label>
-                    <input type="text" id="input-name" placeholder="Ej. Carlos Cruz" class="w-full bg-slate-50 border rounded-xl px-3 py-2 text-xs">
+                    <input type="text" id="input-name" placeholder="Ej. Carlos Vela" class="w-full bg-slate-50 border rounded-xl px-3 py-2 text-xs">
                 </div>
                 <div>
                     <label class="block text-xs font-bold text-slate-700 mb-1">Correo Electrónico (Validado)</label>
@@ -292,7 +299,6 @@ HTML_TEMPLATE = """
                 </div>
             </form>
 
-            <!-- FORMULARIO DE RECUPERACIÓN DE CUENTA -->
             <form id="recover-form" onsubmit="handleRecoverSubmit(event)" class="space-y-3 hidden">
                 <p class="text-xs text-slate-500">Ingresa tu correo registrado y define tu nueva contraseña para restablecer el acceso a tu cuenta.</p>
                 <div>
@@ -350,7 +356,7 @@ HTML_TEMPLATE = """
         </div>
 
         <div class="flex items-center gap-4">
-            <!-- Selector "Atleta en Pista" EXCLUSIVO PARA COACH Y ADMIN (Oculto para Atletas) -->
+            <!-- Selector "Atleta Seleccionado" EXCLUSIVO PARA COACH Y ADMIN -->
             <div id="coach-athlete-selector-container" class="hidden items-center gap-2 bg-slate-100 border px-3.5 py-1.5 rounded-2xl">
                 <i data-lucide="waves" class="w-4 h-4 text-sky-600"></i>
                 <span class="text-xs text-slate-600 font-semibold hidden sm:inline">Atleta Seleccionado (Vista Coach):</span>
@@ -374,7 +380,7 @@ HTML_TEMPLATE = """
             <div class="flex items-center gap-3">
                 <div id="live-indicator-dot" class="w-3.5 h-3.5 rounded-full bg-amber-400"></div>
                 <div>
-                    <div class="text-[10px] text-sky-200 font-extrabold uppercase">ESTADO DE PISCINA 50M (ESP32 #1 SALIDA/META & ESP32 #2 GIRO) + SMARTWATCH</div>
+                    <div class="text-[10px] text-sky-200 font-extrabold uppercase">ESTADO DE PISCINA 50M (ESP32 #1 SALIDA/META & ESP32 #2 GIRO) + SMARTWATCH IoT</div>
                     <div id="status-text" class="text-sm font-black text-white">⚪ Sin sesión activa en piscina (Esperando inicio del Coach)</div>
                 </div>
             </div>
@@ -385,8 +391,8 @@ HTML_TEMPLATE = """
                 </div>
                 <div class="w-px h-6 bg-white/20"></div>
                 <div class="text-center">
-                    <div class="text-[10px] text-sky-100 font-bold uppercase">Parcial 50m</div>
-                    <div id="banner-parcial" class="text-base font-black text-sky-200 font-mono">0.00 s</div>
+                    <div class="text-[10px] text-sky-100 font-bold uppercase">Smartwatch Wi-Fi</div>
+                    <div id="banner-smartwatch-status" class="text-xs font-black text-sky-200">En espera...</div>
                 </div>
                 <div class="w-px h-6 bg-white/20"></div>
                 <div class="text-center">
@@ -423,7 +429,6 @@ HTML_TEMPLATE = """
 
         <!-- 1. HISTORIAL CONSULTABLE POR SESIÓN Y COMPARADOR (PROGRESS) -->
         <div id="tab-content-progress" class="space-y-6">
-            <!-- Totales Generales del Atleta -->
             <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <div class="clean-card p-5 rounded-2xl">
                     <div class="text-[11px] text-slate-400 font-bold uppercase">Atleta Consultado</div>
@@ -443,7 +448,6 @@ HTML_TEMPLATE = """
                 </div>
             </div>
 
-            <!-- Barra de Filtros y Modo de Comparación -->
             <div class="clean-card p-5 rounded-3xl space-y-4">
                 <div class="flex flex-wrap items-center justify-between gap-4 border-b pb-3">
                     <div>
@@ -484,7 +488,6 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
 
-                <!-- Gráfica Comparativa de Sesiones -->
                 <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
                     <div class="lg:col-span-8 h-64 w-full relative">
                         <canvas id="chartProgressComparison"></canvas>
@@ -498,7 +501,6 @@ HTML_TEMPLATE = """
                 </div>
             </div>
 
-            <!-- Tabla de Historial de Sesiones Concretas -->
             <div class="clean-card p-6 rounded-3xl space-y-4">
                 <h3 class="text-sm font-extrabold text-slate-900 flex items-center gap-2">
                     <i data-lucide="calendar-clock" class="w-4 h-4 text-indigo-600"></i> Historial Detallado por Sesión (Haz clic en una sesión para abrir su biomecánica)
@@ -533,20 +535,33 @@ HTML_TEMPLATE = """
                         </h2>
                         <p class="text-xs text-slate-500" id="smartwatch-session-subtitle">Mostrando métricas depuradas de valores atípicos (criterio IQR).</p>
                     </div>
-                    <span class="bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full text-xs font-bold">● IMU 9-Axis & FSR Activos</span>
+                    <span id="smartwatch-badge-live" class="bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full text-xs font-bold">● IMU 9-Axis & FSR Activos</span>
                 </div>
 
-                <!-- Tarjetas de Métricas con Dispersión (Min/Max sin atípicos) y Tooltips Explicativos -->
+                <!-- Tarjetas de Estado Físico del Smartwatch IoT (Mano GPIO 4 y Batería RTC) -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 bg-sky-50/60 p-4 rounded-2xl border border-sky-100">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-bold text-slate-600">Mano Configurada (GPIO 4):</span>
+                        <span id="sw-live-hand" class="text-xs font-black text-sky-800 bg-white px-3 py-1 rounded-full border">Izquierda (Left)</span>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-bold text-slate-600">Batería Estimada (RTC):</span>
+                        <span id="sw-live-battery" class="text-xs font-black text-emerald-700 bg-white px-3 py-1 rounded-full border">100%</span>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-bold text-slate-600">Tiempo Activo Acumulado:</span>
+                        <span id="sw-live-uptime" class="text-xs font-mono font-bold text-slate-800 bg-white px-3 py-1 rounded-full border">0 s</span>
+                    </div>
+                </div>
+
                 <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-                    
-                    <!-- Ángulo de Codo -->
                     <div class="bg-slate-50 p-4 rounded-2xl border relative">
                         <div class="flex justify-between items-center">
                             <span class="text-[10px] text-slate-500 font-extrabold uppercase">Ángulo Codo (Tracción)</span>
                             <div class="relative tooltip-trigger cursor-pointer">
                                 <span class="w-4 h-4 rounded-full bg-slate-200 text-slate-700 flex items-center justify-center text-[10px] font-black">?</span>
                                 <div class="tooltip-box absolute right-0 top-6 w-64 bg-slate-900 text-white p-3 rounded-xl text-[11px] z-50 shadow-xl">
-                                    <strong>Cálculo Ángulo de Codo:</strong> Obtenido por integración de cuaterniones del giroscopio/acelerómetro (IMU) en la fase de tracción (EVF). Se descartan valores atípicos fuera de $Q_1 - 1.5\text{IQR}$ y $Q_3 + 1.5\text{IQR}$.
+                                    <strong>Cálculo Ángulo de Codo:</strong> Obtenido por integración de cuaterniones del giroscopio/acelerómetro (IMU) en la fase de tracción (EVF). Se descartan valores atípicos fuera de Q1 - 1.5*IQR y Q3 + 1.5*IQR.
                                 </div>
                             </div>
                         </div>
@@ -554,7 +569,6 @@ HTML_TEMPLATE = """
                         <div class="text-[11px] text-slate-500 mt-1 font-semibold" id="sw-codo-disp">Mín: 0° | Máx: 0° (IQR: 0°)</div>
                     </div>
 
-                    <!-- Ángulo de Hombro -->
                     <div class="bg-slate-50 p-4 rounded-2xl border relative">
                         <div class="flex justify-between items-center">
                             <span class="text-[10px] text-slate-500 font-extrabold uppercase">Ángulo Hombro (Abducción)</span>
@@ -569,14 +583,13 @@ HTML_TEMPLATE = """
                         <div class="text-[11px] text-slate-500 mt-1 font-semibold" id="sw-hombro-disp">Mín: 0° | Máx: 0° (IQR: 0°)</div>
                     </div>
 
-                    <!-- Fuerza de Brazada Promedio & Simetría -->
                     <div class="bg-slate-50 p-4 rounded-2xl border relative">
                         <div class="flex justify-between items-center">
                             <span class="text-[10px] text-slate-500 font-extrabold uppercase">Fuerza Brazada (Izq / Der)</span>
                             <div class="relative tooltip-trigger cursor-pointer">
                                 <span class="w-4 h-4 rounded-full bg-slate-200 text-slate-700 flex items-center justify-center text-[10px] font-black">?</span>
                                 <div class="tooltip-box absolute right-0 top-6 w-64 bg-slate-900 text-white p-3 rounded-xl text-[11px] z-50 shadow-xl">
-                                    <strong>Cálculo de Fuerza ($N$):</strong> Estimada mediante $F = m_{\text{ef}} \cdot a_{\text{pico}} + \frac{1}{2}\rho C_d A v^2$, combinando aceleración lineal del reloj y empuje hidrodinámico sin valores atípicos.
+                                    <strong>Cálculo de Fuerza (N):</strong> Estimada combinando aceleración lineal del reloj y empuje hidrodinámico sin valores atípicos.
                                 </div>
                             </div>
                         </div>
@@ -584,14 +597,13 @@ HTML_TEMPLATE = """
                         <div class="text-[11px] text-slate-500 mt-1 font-semibold" id="sw-fuerza-disp">Rango limpio: 0 - 0 N</div>
                     </div>
 
-                    <!-- Velocidad Media -->
                     <div class="bg-slate-50 p-4 rounded-2xl border relative">
                         <div class="flex justify-between items-center">
                             <span class="text-[10px] text-slate-500 font-extrabold uppercase">Velocidad Media de Nado</span>
                             <div class="relative tooltip-trigger cursor-pointer">
                                 <span class="w-4 h-4 rounded-full bg-slate-200 text-slate-700 flex items-center justify-center text-[10px] font-black">?</span>
                                 <div class="tooltip-box absolute right-0 top-6 w-64 bg-slate-900 text-white p-3 rounded-xl text-[11px] z-50 shadow-xl">
-                                    <strong>Cálculo de Velocidad ($m/s$):</strong> Relación exacta $v = \frac{\text{Distancia (m)}}{t_{\text{final}} - t_{\text{inicio}}}$ sincronizada con los toques en los pads piezoresistivos ESP32.
+                                    <strong>Cálculo de Velocidad (m/s):</strong> Relación exacta Distancia / Tiempo Real sincronizada con los toques en los pads ESP32.
                                 </div>
                             </div>
                         </div>
@@ -609,18 +621,14 @@ HTML_TEMPLATE = """
                         <span class="text-[11px] text-slate-500">Diagramas estáticos de referencia con superposición dinámica de medición</span>
                     </div>
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <!-- Fase 1: Entrada / Hombro -->
                         <div class="bg-white p-4 rounded-2xl border flex flex-col items-center text-center">
                             <div class="text-xs font-black text-slate-700 mb-2">1. Fase de Entrada y Agarre</div>
                             <svg viewBox="0 0 220 130" class="w-48 h-28">
                                 <line x1="10" y1="65" x2="210" y2="65" stroke="#38bdf8" stroke-width="2" stroke-dasharray="4 4"/>
-                                <!-- Torso y cabeza estáticos -->
                                 <circle cx="70" cy="60" r="10" fill="#64748b"/>
                                 <line x1="30" y1="65" x2="85" y2="65" stroke="#334155" stroke-width="6" stroke-linecap="round"/>
-                                <!-- Brazo en entrada -->
                                 <line x1="85" y1="65" x2="145" y2="45" stroke="#0284c7" stroke-width="5" stroke-linecap="round"/>
                                 <line x1="145" y1="45" x2="190" y2="68" stroke="#0284c7" stroke-width="5" stroke-linecap="round"/>
-                                <!-- Arco del ángulo -->
                                 <path d="M 120 53 A 25 25 0 0 1 165 56" fill="none" stroke="#dc2626" stroke-width="2.5"/>
                                 <circle cx="145" cy="45" r="4" fill="#dc2626"/>
                             </svg>
@@ -629,18 +637,14 @@ HTML_TEMPLATE = """
                             </div>
                         </div>
 
-                        <!-- Fase 2: Tracción (Codo Alto EVF) -->
                         <div class="bg-white p-4 rounded-2xl border flex flex-col items-center text-center">
                             <div class="text-xs font-black text-slate-700 mb-2">2. Fase de Tracción (Codo Alto)</div>
                             <svg viewBox="0 0 220 130" class="w-48 h-28">
                                 <line x1="10" y1="45" x2="210" y2="45" stroke="#38bdf8" stroke-width="2" stroke-dasharray="4 4"/>
                                 <circle cx="95" cy="42" r="10" fill="#64748b"/>
                                 <line x1="45" y1="48" x2="110" y2="48" stroke="#334155" stroke-width="6" stroke-linecap="round"/>
-                                <!-- Hombro a Codo -->
                                 <line x1="110" y1="48" x2="145" y2="68" stroke="#4f46e5" stroke-width="5" stroke-linecap="round"/>
-                                <!-- Codo a Mano (vertical) -->
                                 <line x1="145" y1="68" x2="145" y2="115" stroke="#4f46e5" stroke-width="5" stroke-linecap="round"/>
-                                <!-- Arco del ángulo -->
                                 <path d="M 128 58 A 20 20 0 0 0 145 90" fill="none" stroke="#dc2626" stroke-width="2.5"/>
                                 <circle cx="145" cy="68" r="4.5" fill="#dc2626"/>
                             </svg>
@@ -649,14 +653,12 @@ HTML_TEMPLATE = """
                             </div>
                         </div>
 
-                        <!-- Fase 3: Empuje Final -->
                         <div class="bg-white p-4 rounded-2xl border flex flex-col items-center text-center">
                             <div class="text-xs font-black text-slate-700 mb-2">3. Fase de Empuje y Salida</div>
                             <svg viewBox="0 0 220 130" class="w-48 h-28">
                                 <line x1="10" y1="55" x2="210" y2="55" stroke="#38bdf8" stroke-width="2" stroke-dasharray="4 4"/>
                                 <circle cx="135" cy="50" r="10" fill="#64748b"/>
                                 <line x1="75" y1="56" x2="145" y2="56" stroke="#334155" stroke-width="6" stroke-linecap="round"/>
-                                <!-- Brazo extendiéndose hacia atrás -->
                                 <line x1="120" y1="56" x2="85" y2="75" stroke="#059669" stroke-width="5" stroke-linecap="round"/>
                                 <line x1="85" y1="75" x2="45" y2="68" stroke="#059669" stroke-width="5" stroke-linecap="round"/>
                                 <path d="M 102 65 A 22 22 0 0 1 68 72" fill="none" stroke="#dc2626" stroke-width="2.5"/>
@@ -669,7 +671,6 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
 
-                <!-- Gráficos de Fuerza Izq/Der y Dispersión -->
                 <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
                     <div class="lg:col-span-7 clean-card p-5 rounded-2xl space-y-3">
                         <h3 class="text-xs font-extrabold text-slate-800 uppercase flex items-center gap-2">
@@ -694,7 +695,6 @@ HTML_TEMPLATE = """
         <!-- 3. CONTROL DE PISCINA (EXCLUSIVO COACH) Y RUTINAS DE REFERENCIA -->
         <div id="tab-content-activities" class="space-y-6 hidden">
             
-            <!-- PANEL 1: INICIAR Y FINALIZAR ENTRENAMIENTO EN PISCINA (SOLO VISIBLE PARA COACH / ADMIN) -->
             <div id="coach-pool-control-panel" class="clean-card p-6 rounded-3xl space-y-4 hidden border-2 border-emerald-200 bg-emerald-50/30">
                 <div class="flex flex-wrap justify-between items-center gap-2 border-b border-emerald-200 pb-3">
                     <div>
@@ -706,7 +706,6 @@ HTML_TEMPLATE = """
                     <span id="pool-control-badge" class="bg-slate-200 text-slate-700 px-3 py-1 rounded-full text-xs font-black">Piscina Libre</span>
                 </div>
 
-                <!-- Controles para configurar e iniciar captura -->
                 <div id="pool-setup-form" class="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
                     <div>
                         <label class="block text-[11px] font-bold text-slate-700 mb-1">1. Atleta en Carril / Reloj</label>
@@ -741,7 +740,6 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
 
-                <!-- Caja de Sesión Activa con Cronómetro Ascendente (Visible cuando hay entrenamiento en curso) -->
                 <div id="active-session-box" class="hidden bg-slate-900 text-white p-6 rounded-2xl space-y-4">
                     <div class="flex flex-wrap justify-between items-center gap-4 border-b border-slate-800 pb-3">
                         <div>
@@ -759,7 +757,6 @@ HTML_TEMPLATE = """
                 </div>
             </div>
 
-            <!-- PANEL 2: ASIGNAR RUTINA DE REFERENCIA CON LISTAS DESPLEGABLES (SOLO COACH / ADMIN) -->
             <div id="coach-activity-assignment" class="clean-card p-6 rounded-3xl space-y-4 hidden border border-sky-200">
                 <h3 class="text-sm font-extrabold text-slate-900 flex items-center gap-2">
                     <i data-lucide="clipboard-pen" class="w-4 h-4 text-sky-600"></i> Enviar Rutina de Referencia Previa al Atleta
@@ -810,7 +807,6 @@ HTML_TEMPLATE = """
                 </button>
             </div>
 
-            <!-- PANEL 3: LISTA DE RUTINAS ASIGNADAS (REFERENCIA PARA EL ATLETA / BOTÓN DE INICIO RÁPIDO PARA EL COACH) -->
             <div class="clean-card p-6 rounded-3xl space-y-4">
                 <div class="flex justify-between items-center">
                     <h3 class="text-sm font-extrabold text-slate-900" id="activities-title-label">Rutinas de Referencia Asignadas</h3>
@@ -870,7 +866,6 @@ HTML_TEMPLATE = """
                 </div>
             </div>
 
-            <!-- Panel exclusivo para Administrador -->
             <div id="admin-management-panel" class="clean-card p-6 rounded-3xl space-y-4 hidden border-2 border-indigo-100">
                 <h3 class="text-base font-black text-slate-900 flex items-center gap-2">
                     <i data-lucide="shield-check" class="text-indigo-600"></i> Panel de Administración General (Usuarios y Cuentas Registradas)
@@ -894,7 +889,6 @@ HTML_TEMPLATE = """
         let chartForceInstance = null;
         let chartAngleInstance = null;
 
-        // Variables de sesión en piscina y cronómetro ascendente
         let poolSessionState = { active: false };
         let ascendingTimerInterval = null;
         let pendingSessionPayload = null;
@@ -908,6 +902,7 @@ HTML_TEMPLATE = """
             }
             loadInitialData();
             setInterval(pollPoolSessionStatus, 2000);
+            setInterval(pollSmartwatchLive, 2000);
         });
 
         async function loadInitialData() {
@@ -920,10 +915,55 @@ HTML_TEMPLATE = """
 
             populateAthleteSelectors();
             await pollPoolSessionStatus();
+            await pollSmartwatchLive();
             renderLeaderboard();
             if (currentUser && currentUser.role === 'admin') {
                 loadAdminOverview();
             }
+        }
+
+        // SINCRONIZACIÓN EN VIVO CON EL SMARTWATCH ESP32
+        async function pollSmartwatchLive() {
+            try {
+                const res = await fetch('/api/smartwatch/status');
+                const sw = await res.json();
+                const bannerSw = document.getElementById('banner-smartwatch-status');
+                const badgeLive = document.getElementById('smartwatch-badge-live');
+                const handEl = document.getElementById('sw-live-hand');
+                const batEl = document.getElementById('sw-live-battery');
+                const upEl = document.getElementById('sw-live-uptime');
+
+                if (handEl) handEl.textContent = sw.hand;
+                if (batEl) {
+                    batEl.textContent = `${sw.battery}%`;
+                    batEl.className = `text-xs font-black px-3 py-1 rounded-full border bg-white ${sw.battery <= 20 ? 'text-rose-600 border-rose-300' : 'text-emerald-700'}`;
+                }
+                if (upEl) upEl.textContent = `${sw.uptime_sec} s`;
+
+                if (sw.connected) {
+                    if (bannerSw) {
+                        bannerSw.textContent = `🟢 ${sw.hand} (${sw.battery}%)`;
+                        bannerSw.className = "text-xs font-black text-emerald-300";
+                    }
+                    if (badgeLive) {
+                        badgeLive.textContent = `● Smartwatch Conectado (${sw.hand} | Bat: ${sw.battery}%)`;
+                        badgeLive.className = "bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full text-xs font-bold animate-pulse";
+                    }
+                    document.getElementById('sw-codo-avg').textContent = `${sw.elbow_angle}°`;
+                    document.getElementById('sw-hombro-avg').textContent = `${sw.shoulder_angle}°`;
+                    document.getElementById('ref-angle-pull').textContent = `${sw.elbow_angle}°`;
+                    document.getElementById('ref-angle-shoulder').textContent = `${sw.shoulder_angle}°`;
+                } else {
+                    if (bannerSw) {
+                        bannerSw.textContent = "⚪ Desconectado / Deep Sleep";
+                        bannerSw.className = "text-xs font-bold text-sky-200";
+                    }
+                    if (badgeLive) {
+                        badgeLive.textContent = "⚪ Smartwatch en Espera / Histórico";
+                        badgeLive.className = "bg-slate-200 text-slate-700 px-3 py-1 rounded-full text-xs font-bold";
+                    }
+                }
+            } catch (e) {}
         }
 
         function populateAthleteSelectors() {
@@ -972,7 +1012,6 @@ HTML_TEMPLATE = """
             loadAssignedRoutines(name);
         }
 
-        // FILTRADO DE HISTORIAL POR SESIÓN Y COMPARACIONES
         function applySessionFilters() {
             const styleFilter = document.getElementById('filter-session-style').value;
             const dateFrom = document.getElementById('filter-date-from').value;
@@ -983,14 +1022,12 @@ HTML_TEMPLATE = """
                 .filter(s => s.athlete === activeAthlete)
                 .sort((a, b) => a.date.localeCompare(b.date));
 
-            // Totales generales del atleta
             const totalMeters = athleteSessions.reduce((acc, s) => acc + (s.distance_m || 0), 0);
             const totalSecs = athleteSessions.reduce((acc, s) => acc + (s.time_sec || 0), 0);
             document.getElementById('stat-dist').textContent = (totalMeters / 1000).toFixed(2) + " km";
             document.getElementById('stat-time').textContent = (totalSecs / 60).toFixed(1) + " min";
             document.getElementById('stat-workouts').textContent = athleteSessions.length + " Sesiones";
 
-            // Aplicar filtros de estilo y fecha
             let filtered = athleteSessions.filter(s => {
                 if (styleFilter !== "ALL" && s.style !== styleFilter) return false;
                 if (dateFrom && s.date < dateFrom) return false;
@@ -998,7 +1035,6 @@ HTML_TEMPLATE = """
                 return true;
             });
 
-            // Aplicar modo de comparación
             if (compMode === 'prev') {
                 filtered = filtered.slice(-2);
             } else if (compMode === 'last5') {
@@ -1055,7 +1091,6 @@ HTML_TEMPLATE = """
             const prev = idx > 0 ? athleteSessions[idx - 1] : null;
             selectedSessionObj = current;
 
-            // Actualizar tarjeta de comparación contra la anterior
             const summaryBody = document.getElementById('comparison-summary-body');
             if (prev) {
                 const diffSpeed = (current.speed_ms - prev.speed_ms).toFixed(2);
@@ -1077,7 +1112,6 @@ HTML_TEMPLATE = """
                 `;
             }
 
-            // Actualizar vista de Biomecánica (Smartwatch) y Diagramas Estáticos
             document.getElementById('smartwatch-session-subtitle').textContent =
                 `Sesión seleccionada: ${current.id} (${current.date}) — ${current.style} (${current.distance}) | Atípicos filtrados por IQR`;
 
@@ -1093,7 +1127,6 @@ HTML_TEMPLATE = """
             document.getElementById('sw-vel-avg').textContent = `${current.speed_ms.toFixed(2)} m/s`;
             document.getElementById('sw-vel-disp').textContent = `Parcial 50m: ${current.split_50m.toFixed(2)} s`;
 
-            // Actualizar números en las imágenes estáticas de referencia
             document.getElementById('ref-angle-entry').textContent = `${current.elbow_angle.phase_entry}°`;
             document.getElementById('ref-angle-pull').textContent = `${current.elbow_angle.phase_pull}°`;
             document.getElementById('ref-angle-shoulder').textContent = `${current.shoulder_angle.avg}°`;
@@ -1186,7 +1219,6 @@ HTML_TEMPLATE = """
             });
         }
 
-        // FLUJO DE CONTROL DE SESIÓN EN PISCINA (EXCLUSIVO DEL COACH CON CONFIRMACIÓN)
         function openConfirmModalFromForm() {
             if (poolSessionState.active) {
                 alert("Ya hay una sesión activa en la piscina. Finalízala antes de iniciar otra.");
@@ -1325,7 +1357,6 @@ HTML_TEMPLATE = """
             if (coachTimer) coachTimer.textContent = formatted;
         }
 
-        // RUTINAS DE REFERENCIA
         function publishRoutine() {
             const target = document.getElementById('activity-target-athlete').value;
             const style = document.getElementById('activity-style').value;
@@ -1370,7 +1401,6 @@ HTML_TEMPLATE = """
                         return;
                     }
                     container.innerHTML = list.map(item => {
-                        // El atleta SOLO ve la etiqueta de referencia; el Coach puede iniciar el registro en piscina desde esta rutina
                         const actionHtml = isCoachOrAdmin ?
                             `<button onclick="openConfirmModalFromRoutine('${athleteName}', '${item.style}', '${item.distance}', '${item.title}')" class="bg-emerald-600 hover:bg-emerald-700 text-white font-black px-3.5 py-1.5 rounded-xl text-xs shadow flex items-center gap-1.5">
                                 <i data-lucide="play" class="w-3.5 h-3.5"></i> Iniciar en Piscina desde esta Rutina
@@ -1398,7 +1428,6 @@ HTML_TEMPLATE = """
                 });
         }
 
-        // RANKING SEPARADO POR ESTILO Y DISTANCIA
         function renderLeaderboard() {
             const style = document.getElementById('rank-filter-style').value;
             const distance = document.getElementById('rank-filter-distance').value;
@@ -1406,7 +1435,6 @@ HTML_TEMPLATE = """
 
             const matching = allSessionsList.filter(s => s.style === style && s.distance === distance);
 
-            // Mejor tiempo por cada atleta en ese estilo y distancia
             const bestByAthlete = {};
             matching.forEach(s => {
                 if (!bestByAthlete[s.athlete] || s.time_sec < bestByAthlete[s.athlete].time_sec) {
@@ -1439,7 +1467,6 @@ HTML_TEMPLATE = """
             `).join('');
         }
 
-        // AUTENTICACIÓN, VALIDACIÓN DE CORREO Y RECUPERACIÓN DE CUENTA
         function switchAuthMode(mode) {
             authMode = mode;
             document.getElementById('auth-error-box').classList.add('hidden');
@@ -1542,7 +1569,6 @@ HTML_TEMPLATE = """
             const initials = user.name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase();
             document.getElementById('profile-initials').textContent = initials;
 
-            // REGLA CLAVE: El selector "Atleta en Pista" y los paneles de inicio de piscina son EXCLUSIVOS de Coach y Admin
             if (user.role === 'coach' || user.role === 'admin') {
                 const selectorContainer = document.getElementById('coach-athlete-selector-container');
                 selectorContainer.classList.remove('hidden');
@@ -1596,7 +1622,6 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# Validación estricta de estructura y dominio de correo electrónico
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]{2,}$")
 VALID_DOMAINS = {"gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "swiitroom.com", "icloud.com", "edu.pe", "upn.pe", "pucp.edu.pe", "uni.edu.pe", "upc.edu.pe"}
 
@@ -1714,6 +1739,12 @@ def stop_pool_session():
     speed_ms = round(dist_m / elapsed, 2)
     split_50 = round(elapsed if dist_m <= 50 else (elapsed / (dist_m / 50.0)), 2)
 
+    # Si el Smartwatch envió datos recientemente, usar sus lecturas reales para la sesión guardada
+    sw_active = (time.time() - smartwatch_live_state["last_seen"]) <= 15
+    elbow_avg = smartwatch_live_state["elbow_angle"] if sw_active else 89
+    shoulder_avg = smartwatch_live_state["shoulder_angle"] if sw_active else 56
+    base_force = smartwatch_live_state["force_n"] if sw_active else 430
+
     new_id = f"SES-{len(users_db.get('sessions', [])) + 1:03d}"
     new_session = {
         "id": new_id,
@@ -1725,10 +1756,33 @@ def stop_pool_session():
         "time_sec": elapsed,
         "split_50m": split_50,
         "speed_ms": speed_ms,
-        "elbow_angle": {"avg": 89, "min": 86, "max": 92, "iqr": 3.0, "phase_entry": 31, "phase_pull": 89, "phase_push": 151},
-        "shoulder_angle": {"avg": 56, "min": 52, "max": 59, "iqr": 2.8},
-        "force_left": {"avg": 428, "min": 412, "max": 444, "strokes": [422, 430, 425, 436, 426, 430]},
-        "force_right": {"avg": 436, "min": 420, "max": 450, "strokes": [430, 438, 434, 442, 435, 438]}
+        "elbow_angle": {
+            "avg": elbow_avg,
+            "min": max(70, elbow_avg - 3),
+            "max": min(110, elbow_avg + 3),
+            "iqr": 3.0,
+            "phase_entry": 31,
+            "phase_pull": elbow_avg,
+            "phase_push": 151
+        },
+        "shoulder_angle": {
+            "avg": shoulder_avg,
+            "min": max(40, shoulder_avg - 4),
+            "max": min(75, shoulder_avg + 3),
+            "iqr": 2.8
+        },
+        "force_left": {
+            "avg": base_force,
+            "min": base_force - 14,
+            "max": base_force + 14,
+            "strokes": [base_force - 6, base_force + 2, base_force - 3, base_force + 8, base_force - 2, base_force + 2]
+        },
+        "force_right": {
+            "avg": base_force + 8,
+            "min": base_force - 8,
+            "max": base_force + 20,
+            "strokes": [base_force + 2, base_force + 10, base_force + 6, base_force + 14, base_force + 7, base_force + 9]
+        }
     }
 
     users_db.setdefault("sessions", []).append(new_session)
@@ -1768,6 +1822,27 @@ def add_activity():
         save_users(users_db)
         return jsonify({"status": "success"})
     return jsonify({"status": "error"}), 400
+
+# RUTAS DE RECEPCIÓN Y ESTADO EN VIVO DEL SMARTWATCH IoT (ESP32)
+@app.route("/api/smartwatch/telemetry", methods=["POST"])
+def receive_smartwatch_telemetry():
+    data = request.json or {}
+    smartwatch_live_state["connected"] = True
+    smartwatch_live_state["hand"] = data.get("hand", "Izquierda (Left)")
+    smartwatch_live_state["is_left"] = data.get("is_left", True)
+    smartwatch_live_state["battery"] = data.get("battery", 100)
+    smartwatch_live_state["uptime_sec"] = data.get("uptime_sec", 0)
+    smartwatch_live_state["elbow_angle"] = data.get("elbow_angle", 88)
+    smartwatch_live_state["shoulder_angle"] = data.get("shoulder_angle", 55)
+    smartwatch_live_state["force_n"] = data.get("force_n", 425)
+    smartwatch_live_state["last_seen"] = time.time()
+    return jsonify({"status": "ok", "active_session": active_pool_session["active"]})
+
+@app.route("/api/smartwatch/status", methods=["GET"])
+def get_smartwatch_status():
+    if time.time() - smartwatch_live_state["last_seen"] > 8:
+        smartwatch_live_state["connected"] = False
+    return jsonify(smartwatch_live_state)
 
 @app.route("/stream")
 def stream():
