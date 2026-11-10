@@ -1,10 +1,10 @@
-import queue
-import threading
-import os
-import json
-import re
-import time
 from datetime import datetime
+import json
+import os
+import queue
+import re
+import threading
+import time
 from flask import Flask, Response, jsonify, render_template_string, request
 import serial
 
@@ -26,190 +26,459 @@ active_pool_session = {
     "distance": None,
     "coach": None,
     "routine_title": None,
-    "start_timestamp": None
+    "start_timestamp": None,
 }
 
-# Estado en tiempo real del Smartwatch IoT (ESP32 por Wi-Fi)
+# Estado en tiempo real del Smartwatch IoT (ESP32 + MPU-9250 por Wi-Fi)
 smartwatch_live_state = {
     "connected": False,
     "hand": "Izquierda (Left)",
     "is_left": True,
     "battery": 100,
     "uptime_sec": 0,
-    "elbow_angle": 88,
-    "shoulder_angle": 55,
-    "force_n": 425,
-    "last_seen": 0
+    "elbow_angle": 0,
+    "elbow_min": 0,
+    "elbow_max": 0,
+    "shoulder_angle": 0,
+    "shoulder_min": 0,
+    "shoulder_max": 0,
+    "phase_entry": 0,
+    "phase_pull": 0,
+    "phase_push": 0,
+    "force_n": 0,
+    "force_left": 0,
+    "force_right": 0,
+    "strokes": 0,
+    "last_seen": 0,
 }
 
+
 def get_default_db():
-    return {
-        "admins": [
-            {"name": "Administrador General", "email": "admin@swiitroom.com", "password": "admin123", "role": "admin"}
-        ],
-        "coaches": [
-            {"name": "Pepe Gómez", "email": "coach@swiitroom.com", "password": "coach123", "role": "coach"}
-        ],
-        "athletes": [
-            {"name": "Mario Peinado", "email": "atleta@swiitroom.com", "password": "atleta123", "role": "athlete"},
-            {"name": "Pepe Juárez", "email": "pepej@swiitroom.com", "password": "123", "role": "athlete"},
-            {"name": "Jaime Pastor", "email": "jaime@swiitroom.com", "password": "123", "role": "athlete"}
-        ],
-        "routines": {
-            "Mario Peinado": [
-                {
-                    "id": "rut-101",
-                    "style": "Crol / Libre",
-                    "distance": "100 m",
-                    "title": "Velocidad Anaeróbica 100m",
-                    "desc": "Salida explosiva desde pad, mantener codo alto (EVF > 85°) en tracción y viraje rápido en 50m.",
-                    "assigned_by": "Pepe Gómez",
-                    "date": "2026-11-05"
-                },
-                {
-                    "id": "rut-102",
-                    "style": "Mariposa",
-                    "distance": "50 m",
-                    "title": "Potencia de Brazada en Mariposa",
-                    "desc": "Enfoque en simetría de tracción entre brazo izquierdo y derecho. Respiración cada 2 brazadas.",
-                    "assigned_by": "Pepe Gómez",
-                    "date": "2026-11-07"
-                }
-            ],
-            "Pepe Juárez": [
-                {
-                    "id": "rut-103",
-                    "style": "Espalda",
-                    "distance": "200 m",
-                    "title": "Resistencia Aeróbica en Espalda",
-                    "desc": "Mantener rolido constante y entrada limpia del hombro a 32°.",
-                    "assigned_by": "Pepe Gómez",
-                    "date": "2026-11-06"
-                }
-            ]
-        },
-        "sessions": [
-            {
-                "id": "SES-001", "athlete": "Mario Peinado", "date": "2026-10-20", "style": "Crol / Libre", "distance": "50 m", "distance_m": 50,
-                "time_sec": 25.40, "split_50m": 25.40, "speed_ms": 1.97,
-                "elbow_angle": {"avg": 88, "min": 84, "max": 92, "iqr": 4.2, "phase_entry": 32, "phase_pull": 88, "phase_push": 148},
-                "shoulder_angle": {"avg": 54, "min": 49, "max": 58, "iqr": 3.5},
-                "force_left": {"avg": 425, "min": 405, "max": 442, "strokes": [420, 428, 415, 435, 422, 430]},
-                "force_right": {"avg": 440, "min": 420, "max": 455, "strokes": [438, 445, 432, 450, 436, 442]}
-            },
-            {
-                "id": "SES-002", "athlete": "Mario Peinado", "date": "2026-10-24", "style": "Crol / Libre", "distance": "100 m", "distance_m": 100,
-                "time_sec": 54.80, "split_50m": 26.50, "speed_ms": 1.82,
-                "elbow_angle": {"avg": 89, "min": 85, "max": 93, "iqr": 3.8, "phase_entry": 31, "phase_pull": 89, "phase_push": 150},
-                "shoulder_angle": {"avg": 55, "min": 50, "max": 59, "iqr": 3.1},
-                "force_left": {"avg": 418, "min": 398, "max": 435, "strokes": [415, 422, 410, 428, 416, 420]},
-                "force_right": {"avg": 432, "min": 412, "max": 448, "strokes": [430, 436, 425, 442, 428, 434]}
-            },
-            {
-                "id": "SES-003", "athlete": "Mario Peinado", "date": "2026-10-28", "style": "Mariposa", "distance": "50 m", "distance_m": 50,
-                "time_sec": 27.10, "split_50m": 27.10, "speed_ms": 1.85,
-                "elbow_angle": {"avg": 92, "min": 88, "max": 96, "iqr": 4.0, "phase_entry": 28, "phase_pull": 92, "phase_push": 154},
-                "shoulder_angle": {"avg": 60, "min": 56, "max": 64, "iqr": 3.9},
-                "force_left": {"avg": 460, "min": 440, "max": 480, "strokes": [455, 465, 450, 472, 458, 462]},
-                "force_right": {"avg": 465, "min": 445, "max": 485, "strokes": [460, 470, 455, 478, 462, 468]}
-            },
-            {
-                "id": "SES-004", "athlete": "Mario Peinado", "date": "2026-11-01", "style": "Crol / Libre", "distance": "100 m", "distance_m": 100,
-                "time_sec": 53.90, "split_50m": 26.10, "speed_ms": 1.86,
-                "elbow_angle": {"avg": 90, "min": 87, "max": 93, "iqr": 2.9, "phase_entry": 30, "phase_pull": 90, "phase_push": 152},
-                "shoulder_angle": {"avg": 56, "min": 52, "max": 59, "iqr": 2.7},
-                "force_left": {"avg": 430, "min": 412, "max": 446, "strokes": [425, 434, 420, 440, 428, 433]},
-                "force_right": {"avg": 442, "min": 425, "max": 456, "strokes": [438, 446, 432, 452, 440, 445]}
-            },
-            {
-                "id": "SES-005", "athlete": "Mario Peinado", "date": "2026-11-04", "style": "Crol / Libre", "distance": "500 m", "distance_m": 500,
-                "time_sec": 312.50, "split_50m": 30.20, "speed_ms": 1.60,
-                "elbow_angle": {"avg": 87, "min": 82, "max": 91, "iqr": 4.5, "phase_entry": 33, "phase_pull": 87, "phase_push": 146},
-                "shoulder_angle": {"avg": 52, "min": 48, "max": 56, "iqr": 3.8},
-                "force_left": {"avg": 390, "min": 370, "max": 410, "strokes": [395, 392, 388, 390, 385, 390]},
-                "force_right": {"avg": 398, "min": 380, "max": 415, "strokes": [402, 400, 395, 398, 394, 399]}
-            },
-            {
-                "id": "SES-006", "athlete": "Mario Peinado", "date": "2026-11-07", "style": "Crol / Libre", "distance": "100 m", "distance_m": 100,
-                "time_sec": 53.15, "split_50m": 25.80, "speed_ms": 1.88,
-                "elbow_angle": {"avg": 91, "min": 88, "max": 94, "iqr": 2.5, "phase_entry": 30, "phase_pull": 91, "phase_push": 155},
-                "shoulder_angle": {"avg": 57, "min": 54, "max": 60, "iqr": 2.4},
-                "force_left": {"avg": 438, "min": 422, "max": 452, "strokes": [432, 440, 435, 446, 436, 440]},
-                "force_right": {"avg": 448, "min": 434, "max": 460, "strokes": [445, 450, 442, 456, 446, 450]}
-            },
-            {
-                "id": "SES-007", "athlete": "Pepe Juárez", "date": "2026-11-02", "style": "Crol / Libre", "distance": "50 m", "distance_m": 50,
-                "time_sec": 26.20, "split_50m": 26.20, "speed_ms": 1.91,
-                "elbow_angle": {"avg": 86, "min": 82, "max": 90, "iqr": 3.6, "phase_entry": 34, "phase_pull": 86, "phase_push": 145},
-                "shoulder_angle": {"avg": 53, "min": 49, "max": 57, "iqr": 3.2},
-                "force_left": {"avg": 415, "min": 398, "max": 430, "strokes": [410, 418, 412, 422, 414, 416]},
-                "force_right": {"avg": 408, "min": 390, "max": 424, "strokes": [405, 412, 404, 415, 406, 408]}
-            },
-            {
-                "id": "SES-008", "athlete": "Pepe Juárez", "date": "2026-11-06", "style": "Crol / Libre", "distance": "100 m", "distance_m": 100,
-                "time_sec": 55.40, "split_50m": 26.90, "speed_ms": 1.81,
-                "elbow_angle": {"avg": 85, "min": 81, "max": 89, "iqr": 3.8, "phase_entry": 33, "phase_pull": 85, "phase_push": 144},
-                "shoulder_angle": {"avg": 52, "min": 48, "max": 56, "iqr": 3.4},
-                "force_left": {"avg": 410, "min": 392, "max": 425, "strokes": [408, 414, 405, 418, 408, 410]},
-                "force_right": {"avg": 402, "min": 385, "max": 418, "strokes": [400, 406, 398, 410, 400, 402]}
-            },
-            {
-                "id": "SES-009", "athlete": "Jaime Pastor", "date": "2026-11-05", "style": "Crol / Libre", "distance": "50 m", "distance_m": 50,
-                "time_sec": 24.95, "split_50m": 24.95, "speed_ms": 2.00,
-                "elbow_angle": {"avg": 91, "min": 88, "max": 94, "iqr": 2.6, "phase_entry": 29, "phase_pull": 91, "phase_push": 156},
-                "shoulder_angle": {"avg": 58, "min": 55, "max": 61, "iqr": 2.5},
-                "force_left": {"avg": 450, "min": 435, "max": 465, "strokes": [448, 452, 445, 458, 449, 451]},
-                "force_right": {"avg": 455, "min": 440, "max": 470, "strokes": [452, 458, 450, 462, 454, 456]}
-            }
-        ]
-    }
+  return {
+      "admins": [{
+          "name": "Administrador General",
+          "email": "admin@swiitroom.com",
+          "password": "admin123",
+          "role": "admin",
+      }],
+      "coaches": [{
+          "name": "Pepe Gómez",
+          "email": "coach@swiitroom.com",
+          "password": "coach123",
+          "role": "coach",
+      }],
+      "athletes": [
+          {
+              "name": "Mario Peinado",
+              "email": "atleta@swiitroom.com",
+              "password": "atleta123",
+              "role": "athlete",
+          },
+          {
+              "name": "Pepe Juárez",
+              "email": "pepej@swiitroom.com",
+              "password": "123",
+              "role": "athlete",
+          },
+          {
+              "name": "Jaime Pastor",
+              "email": "jaime@swiitroom.com",
+              "password": "123",
+              "role": "athlete",
+          },
+      ],
+      "routines": {
+          "Mario Peinado": [
+              {
+                  "id": "rut-101",
+                  "style": "Crol / Libre",
+                  "distance": "100 m",
+                  "title": "Velocidad Anaeróbica 100m",
+                  "desc": (
+                      "Salida explosiva desde pad, mantener codo alto (EVF >"
+                      " 85°) en tracción y viraje rápido en 50m."
+                  ),
+                  "assigned_by": "Pepe Gómez",
+                  "date": "2026-11-05",
+              },
+              {
+                  "id": "rut-102",
+                  "style": "Mariposa",
+                  "distance": "50 m",
+                  "title": "Potencia de Brazada en Mariposa",
+                  "desc": (
+                      "Enfoque en simetría de tracción entre brazo izquierdo y"
+                      " derecho. Respiración cada 2 brazadas."
+                  ),
+                  "assigned_by": "Pepe Gómez",
+                  "date": "2026-11-07",
+              },
+          ],
+          "Pepe Juárez": [{
+              "id": "rut-103",
+              "style": "Espalda",
+              "distance": "200 m",
+              "title": "Resistencia Aeróbica en Espalda",
+              "desc": (
+                  "Mantener rolido constante y entrada limpia del hombro a 32°."
+              ),
+              "assigned_by": "Pepe Gómez",
+              "date": "2026-11-06",
+          }],
+      },
+      "sessions": [
+          {
+              "id": "SES-001",
+              "athlete": "Mario Peinado",
+              "date": "2026-10-20",
+              "style": "Crol / Libre",
+              "distance": "50 m",
+              "distance_m": 50,
+              "time_sec": 25.40,
+              "split_50m": 25.40,
+              "speed_ms": 1.97,
+              "elbow_angle": {
+                  "avg": 88,
+                  "min": 84,
+                  "max": 92,
+                  "iqr": 4.2,
+                  "phase_entry": 32,
+                  "phase_pull": 88,
+                  "phase_push": 148,
+              },
+              "shoulder_angle": {"avg": 54, "min": 49, "max": 58, "iqr": 3.5},
+              "force_left": {
+                  "avg": 425,
+                  "min": 405,
+                  "max": 442,
+                  "strokes": [420, 428, 415, 435, 422, 430],
+              },
+              "force_right": {
+                  "avg": 440,
+                  "min": 420,
+                  "max": 455,
+                  "strokes": [438, 445, 432, 450, 436, 442],
+              },
+          },
+          {
+              "id": "SES-002",
+              "athlete": "Mario Peinado",
+              "date": "2026-10-24",
+              "style": "Crol / Libre",
+              "distance": "100 m",
+              "distance_m": 100,
+              "time_sec": 54.80,
+              "split_50m": 26.50,
+              "speed_ms": 1.82,
+              "elbow_angle": {
+                  "avg": 89,
+                  "min": 85,
+                  "max": 93,
+                  "iqr": 3.8,
+                  "phase_entry": 31,
+                  "phase_pull": 89,
+                  "phase_push": 150,
+              },
+              "shoulder_angle": {"avg": 55, "min": 50, "max": 59, "iqr": 3.1},
+              "force_left": {
+                  "avg": 418,
+                  "min": 398,
+                  "max": 435,
+                  "strokes": [415, 422, 410, 428, 416, 420],
+              },
+              "force_right": {
+                  "avg": 432,
+                  "min": 412,
+                  "max": 448,
+                  "strokes": [430, 436, 425, 442, 428, 434],
+              },
+          },
+          {
+              "id": "SES-003",
+              "athlete": "Mario Peinado",
+              "date": "2026-10-28",
+              "style": "Mariposa",
+              "distance": "50 m",
+              "distance_m": 50,
+              "time_sec": 27.10,
+              "split_50m": 27.10,
+              "speed_ms": 1.85,
+              "elbow_angle": {
+                  "avg": 92,
+                  "min": 88,
+                  "max": 96,
+                  "iqr": 4.0,
+                  "phase_entry": 28,
+                  "phase_pull": 92,
+                  "phase_push": 154,
+              },
+              "shoulder_angle": {"avg": 60, "min": 56, "max": 64, "iqr": 3.9},
+              "force_left": {
+                  "avg": 460,
+                  "min": 440,
+                  "max": 480,
+                  "strokes": [455, 465, 450, 472, 458, 462],
+              },
+              "force_right": {
+                  "avg": 465,
+                  "min": 445,
+                  "max": 485,
+                  "strokes": [460, 470, 455, 478, 462, 468],
+              },
+          },
+          {
+              "id": "SES-004",
+              "athlete": "Mario Peinado",
+              "date": "2026-11-01",
+              "style": "Crol / Libre",
+              "distance": "100 m",
+              "distance_m": 100,
+              "time_sec": 53.90,
+              "split_50m": 26.10,
+              "speed_ms": 1.86,
+              "elbow_angle": {
+                  "avg": 90,
+                  "min": 87,
+                  "max": 93,
+                  "iqr": 2.9,
+                  "phase_entry": 30,
+                  "phase_pull": 90,
+                  "phase_push": 152,
+              },
+              "shoulder_angle": {"avg": 56, "min": 52, "max": 59, "iqr": 2.7},
+              "force_left": {
+                  "avg": 430,
+                  "min": 412,
+                  "max": 446,
+                  "strokes": [425, 434, 420, 440, 428, 433],
+              },
+              "force_right": {
+                  "avg": 442,
+                  "min": 425,
+                  "max": 456,
+                  "strokes": [438, 446, 432, 452, 440, 445],
+              },
+          },
+          {
+              "id": "SES-005",
+              "athlete": "Mario Peinado",
+              "date": "2026-11-04",
+              "style": "Crol / Libre",
+              "distance": "500 m",
+              "distance_m": 500,
+              "time_sec": 312.50,
+              "split_50m": 30.20,
+              "speed_ms": 1.60,
+              "elbow_angle": {
+                  "avg": 87,
+                  "min": 82,
+                  "max": 91,
+                  "iqr": 4.5,
+                  "phase_entry": 33,
+                  "phase_pull": 87,
+                  "phase_push": 146,
+              },
+              "shoulder_angle": {"avg": 52, "min": 48, "max": 56, "iqr": 3.8},
+              "force_left": {
+                  "avg": 390,
+                  "min": 370,
+                  "max": 410,
+                  "strokes": [395, 392, 388, 390, 385, 390],
+              },
+              "force_right": {
+                  "avg": 398,
+                  "min": 380,
+                  "max": 415,
+                  "strokes": [402, 400, 395, 398, 394, 399],
+              },
+          },
+          {
+              "id": "SES-006",
+              "athlete": "Mario Peinado",
+              "date": "2026-11-07",
+              "style": "Crol / Libre",
+              "distance": "100 m",
+              "distance_m": 100,
+              "time_sec": 53.15,
+              "split_50m": 25.80,
+              "speed_ms": 1.88,
+              "elbow_angle": {
+                  "avg": 91,
+                  "min": 88,
+                  "max": 94,
+                  "iqr": 2.5,
+                  "phase_entry": 30,
+                  "phase_pull": 91,
+                  "phase_push": 155,
+              },
+              "shoulder_angle": {"avg": 57, "min": 54, "max": 60, "iqr": 2.4},
+              "force_left": {
+                  "avg": 438,
+                  "min": 422,
+                  "max": 452,
+                  "strokes": [432, 440, 435, 446, 436, 440],
+              },
+              "force_right": {
+                  "avg": 448,
+                  "min": 434,
+                  "max": 460,
+                  "strokes": [445, 450, 442, 456, 446, 450],
+              },
+          },
+          {
+              "id": "SES-007",
+              "athlete": "Pepe Juárez",
+              "date": "2026-11-02",
+              "style": "Crol / Libre",
+              "distance": "50 m",
+              "distance_m": 50,
+              "time_sec": 26.20,
+              "split_50m": 26.20,
+              "speed_ms": 1.91,
+              "elbow_angle": {
+                  "avg": 86,
+                  "min": 82,
+                  "max": 90,
+                  "iqr": 3.6,
+                  "phase_entry": 34,
+                  "phase_pull": 86,
+                  "phase_push": 145,
+              },
+              "shoulder_angle": {"avg": 53, "min": 49, "max": 57, "iqr": 3.2},
+              "force_left": {
+                  "avg": 415,
+                  "min": 398,
+                  "max": 430,
+                  "strokes": [410, 418, 412, 422, 414, 416],
+              },
+              "force_right": {
+                  "avg": 408,
+                  "min": 390,
+                  "max": 424,
+                  "strokes": [405, 412, 404, 415, 406, 408],
+              },
+          },
+          {
+              "id": "SES-008",
+              "athlete": "Pepe Juárez",
+              "date": "2026-11-06",
+              "style": "Crol / Libre",
+              "distance": "100 m",
+              "distance_m": 100,
+              "time_sec": 55.40,
+              "split_50m": 26.90,
+              "speed_ms": 1.81,
+              "elbow_angle": {
+                  "avg": 85,
+                  "min": 81,
+                  "max": 89,
+                  "iqr": 3.8,
+                  "phase_entry": 33,
+                  "phase_pull": 85,
+                  "phase_push": 144,
+              },
+              "shoulder_angle": {"avg": 52, "min": 48, "max": 56, "iqr": 3.4},
+              "force_left": {
+                  "avg": 410,
+                  "min": 392,
+                  "max": 425,
+                  "strokes": [408, 414, 405, 418, 408, 410],
+              },
+              "force_right": {
+                  "avg": 402,
+                  "min": 385,
+                  "max": 418,
+                  "strokes": [400, 406, 398, 410, 400, 402],
+              },
+          },
+          {
+              "id": "SES-009",
+              "athlete": "Jaime Pastor",
+              "date": "2026-11-05",
+              "style": "Crol / Libre",
+              "distance": "50 m",
+              "distance_m": 50,
+              "time_sec": 24.95,
+              "split_50m": 24.95,
+              "speed_ms": 2.00,
+              "elbow_angle": {
+                  "avg": 91,
+                  "min": 88,
+                  "max": 94,
+                  "iqr": 2.6,
+                  "phase_entry": 29,
+                  "phase_pull": 91,
+                  "phase_push": 156,
+              },
+              "shoulder_angle": {"avg": 58, "min": 55, "max": 61, "iqr": 2.5},
+              "force_left": {
+                  "avg": 450,
+                  "min": 435,
+                  "max": 465,
+                  "strokes": [448, 452, 445, 458, 449, 451],
+              },
+              "force_right": {
+                  "avg": 455,
+                  "min": 440,
+                  "max": 470,
+                  "strokes": [452, 458, 450, 462, 454, 456],
+              },
+          },
+      ],
+  }
+
 
 def load_users():
-    default_data = get_default_db()
-    if os.path.exists(USERS_FILE):
-        try:
-            with open(USERS_FILE, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-                for key in ["admins", "coaches", "athletes", "routines", "sessions"]:
-                    if key not in loaded:
-                        loaded[key] = default_data[key]
-                for role_key in ["admins", "coaches", "athletes"]:
-                    existing_emails = {u["email"].lower() for u in loaded[role_key]}
-                    for default_u in default_data[role_key]:
-                        if default_u["email"].lower() not in existing_emails:
-                            loaded[role_key].append(default_u)
-                return loaded
-        except Exception:
-            pass
-    save_users(default_data)
-    return default_data
+  default_data = get_default_db()
+  if os.path.exists(USERS_FILE):
+    try:
+      with open(USERS_FILE, "r", encoding="utf-8") as f:
+        loaded = json.load(f)
+        for key in ["admins", "coaches", "athletes", "routines", "sessions"]:
+          if key not in loaded:
+            loaded[key] = default_data[key]
+        for role_key in ["admins", "coaches", "athletes"]:
+          existing_emails = {u["email"].lower() for u in loaded[role_key]}
+          for default_u in default_data[role_key]:
+            if default_u["email"].lower() not in existing_emails:
+              loaded[role_key].append(default_u)
+        return loaded
+    except Exception:
+      pass
+  save_users(default_data)
+  return default_data
+
 
 def save_users(db):
-    try:
-        with open(USERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(db, f, indent=4, ensure_ascii=False)
-    except Exception as e:
-        print(f"Error guardando base de datos: {e}")
+  try:
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+      json.dump(db, f, indent=4, ensure_ascii=False)
+  except Exception as e:
+    print(f"Error guardando base de datos: {e}")
+
 
 users_db = load_users()
 
+
 def parse_distance_meters(dist_str):
-    if "1 km" in dist_str or "1000" in dist_str:
-        return 1000
-    m = re.search(r"(\d+)", dist_str)
-    return int(m.group(1)) if m else 50
+  if "1 km" in dist_str or "1000" in dist_str:
+    return 1000
+  m = re.search(r"(\d+)", dist_str)
+  return int(m.group(1)) if m else 50
+
 
 def read_serial(port_name):
-    try:
-        ser = serial.Serial(port_name, BAUD_RATE, timeout=1)
-        print(f"Conectado a ESP32 en {port_name}")
-        while True:
-            if ser.in_waiting:
-                line = ser.readline().decode('utf-8', errors='ignore').strip()
-                if line and active_pool_session["active"]:
-                    data_queue.put(f"[{port_name}] {line}")
-    except Exception as e:
-        print(f"Aviso en puerto {port_name}: {e}. (Modo Wi-Fi / Simulación listo)")
+  try:
+    ser = serial.Serial(port_name, BAUD_RATE, timeout=1)
+    print(f"Conectado a ESP32 en {port_name}")
+    while True:
+      if ser.in_waiting:
+        line = ser.readline().decode("utf-8", errors="ignore").strip()
+        if line and active_pool_session["active"]:
+          data_queue.put(f"[{port_name}] {line}")
+  except Exception as e:
+    print(f"Aviso en puerto {port_name}: {e}. (Modo Wi-Fi / Simulación listo)")
+
 
 threading.Thread(target=read_serial, args=(SERIAL_PORT_1,), daemon=True).start()
 threading.Thread(target=read_serial, args=(SERIAL_PORT_2,), daemon=True).start()
@@ -246,10 +515,10 @@ HTML_TEMPLATE = """
         <div id="login-screen-welcome" class="login-hero-bg rounded-[2.5rem] max-w-sm w-full h-[580px] flex flex-col justify-between p-8 text-center text-white shadow-2xl border border-white/10 relative">
             <div class="pt-8">
                 <div class="text-2xl font-black tracking-widest text-white">SWiiT<span class="text-sky-400">room</span></div>
-                <p class="text-[11px] text-sky-200 mt-1 font-semibold">Telemetría Piscina 50m & Smartwatch IMU</p>
+                <p class="text-[11px] text-sky-200 mt-1 font-semibold">Telemetría Piscina 50m & Smartwatch MPU-9250</p>
             </div>
             <div class="space-y-3.5 pb-4">
-                <p class="text-xs text-slate-200">Control biomecánico de brazada, sensores de contacto ESP32 y análisis histórico por sesión.</p>
+                <p class="text-xs text-slate-200">Control biomecánico de brazada con punto cero (0°), sensores de contacto ESP32 y análisis histórico por sesión.</p>
                 <button onclick="switchAuthMode('login')" class="w-full bg-white text-slate-950 font-extrabold py-3.5 rounded-full text-xs shadow-xl hover:bg-slate-100">
                     Iniciar Sesión
                 </button>
@@ -329,7 +598,7 @@ HTML_TEMPLATE = """
                 <h3 class="text-base font-black">Confirmar Inicio de Registro en Piscina</h3>
             </div>
             <p class="text-xs text-slate-600 leading-relaxed">
-                El reloj biométrico y los sensores ESP32 asignarán todos los datos de esta sesión al siguiente nadador. Verifica que sea el atleta correcto antes de iniciar:
+                El reloj biométrico (MPU-9250) y los sensores ESP32 asignarán todos los datos de esta sesión al siguiente nadador. Verifica que sea el atleta correcto antes de iniciar:
             </p>
             <div class="bg-slate-50 p-4 rounded-2xl border space-y-1.5 text-xs">
                 <div class="flex justify-between"><span class="text-slate-400 font-bold">Atleta Seleccionado:</span> <span id="conf-athlete" class="font-black text-slate-900"></span></div>
@@ -380,7 +649,7 @@ HTML_TEMPLATE = """
             <div class="flex items-center gap-3">
                 <div id="live-indicator-dot" class="w-3.5 h-3.5 rounded-full bg-amber-400"></div>
                 <div>
-                    <div class="text-[10px] text-sky-200 font-extrabold uppercase">ESTADO DE PISCINA 50M (ESP32 #1 SALIDA/META & ESP32 #2 GIRO) + SMARTWATCH IoT</div>
+                    <div class="text-[10px] text-sky-200 font-extrabold uppercase">ESTADO DE PISCINA 50M (ESP32 #1 SALIDA/META & ESP32 #2 GIRO) + SMARTWATCH MPU-9250</div>
                     <div id="status-text" class="text-sm font-black text-white">⚪ Sin sesión activa en piscina (Esperando inicio del Coach)</div>
                 </div>
             </div>
@@ -535,7 +804,7 @@ HTML_TEMPLATE = """
                         </h2>
                         <p class="text-xs text-slate-500" id="smartwatch-session-subtitle">Mostrando métricas depuradas de valores atípicos (criterio IQR).</p>
                     </div>
-                    <span id="smartwatch-badge-live" class="bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full text-xs font-bold">● IMU 9-Axis & FSR Activos</span>
+                    <span id="smartwatch-badge-live" class="bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full text-xs font-bold">● MPU-9250 9-Axis & FSR Activos</span>
                 </div>
 
                 <!-- Tarjetas de Estado Físico del Smartwatch IoT (Mano GPIO 4 y Batería RTC) -->
@@ -561,7 +830,7 @@ HTML_TEMPLATE = """
                             <div class="relative tooltip-trigger cursor-pointer">
                                 <span class="w-4 h-4 rounded-full bg-slate-200 text-slate-700 flex items-center justify-center text-[10px] font-black">?</span>
                                 <div class="tooltip-box absolute right-0 top-6 w-64 bg-slate-900 text-white p-3 rounded-xl text-[11px] z-50 shadow-xl">
-                                    <strong>Cálculo Ángulo de Codo:</strong> Obtenido por integración de cuaterniones del giroscopio/acelerómetro (IMU) en la fase de tracción (EVF). Se descartan valores atípicos fuera de Q1 - 1.5*IQR y Q3 + 1.5*IQR.
+                                    <strong>Cálculo Ángulo de Codo:</strong> Medido con filtro complementario (MPU-9250) desde la referencia de 0° (brazo horizontal a la altura del hombro). Se descartan valores atípicos fuera de Q1 - 1.5*IQR y Q3 + 1.5*IQR.
                                 </div>
                             </div>
                         </div>
@@ -575,7 +844,7 @@ HTML_TEMPLATE = """
                             <div class="relative tooltip-trigger cursor-pointer">
                                 <span class="w-4 h-4 rounded-full bg-slate-200 text-slate-700 flex items-center justify-center text-[10px] font-black">?</span>
                                 <div class="tooltip-box absolute right-0 top-6 w-64 bg-slate-900 text-white p-3 rounded-xl text-[11px] z-50 shadow-xl">
-                                    <strong>Cálculo Ángulo de Hombro:</strong> Estimado a partir del vector gravitacional e inclinación escapular medida por el IMU durante el agarre y recobro, filtrando picos por turbulencia.
+                                    <strong>Cálculo Ángulo de Hombro:</strong> Calculado respecto al punto cero (0°) calibrado con el brazo extendido a la altura del hombro, filtrando picos por turbulencia.
                                 </div>
                             </div>
                         </div>
@@ -589,7 +858,7 @@ HTML_TEMPLATE = """
                             <div class="relative tooltip-trigger cursor-pointer">
                                 <span class="w-4 h-4 rounded-full bg-slate-200 text-slate-700 flex items-center justify-center text-[10px] font-black">?</span>
                                 <div class="tooltip-box absolute right-0 top-6 w-64 bg-slate-900 text-white p-3 rounded-xl text-[11px] z-50 shadow-xl">
-                                    <strong>Cálculo de Fuerza (N):</strong> Estimada combinando aceleración lineal del reloj y empuje hidrodinámico sin valores atípicos.
+                                    <strong>Cálculo de Fuerza (N):</strong> Estimada combinando aceleración neta dinámica del MPU-9250 (±4g) y empuje hidrodinámico sin valores atípicos.
                                 </div>
                             </div>
                         </div>
@@ -603,7 +872,7 @@ HTML_TEMPLATE = """
                             <div class="relative tooltip-trigger cursor-pointer">
                                 <span class="w-4 h-4 rounded-full bg-slate-200 text-slate-700 flex items-center justify-center text-[10px] font-black">?</span>
                                 <div class="tooltip-box absolute right-0 top-6 w-64 bg-slate-900 text-white p-3 rounded-xl text-[11px] z-50 shadow-xl">
-                                    <strong>Cálculo de Velocidad (m/s):</strong> Relación exacta Distancia / Tiempo Real sincronizada con los toques en los pads ESP32.
+                                    <strong>Cálculo de Velocidad (m/s):</strong> Relación exacta Distancia / Tiempo Real sincronizada con el cronómetro ascendente y los pads ESP32.
                                 </div>
                             </div>
                         </div>
@@ -616,7 +885,7 @@ HTML_TEMPLATE = """
                 <div class="clean-card p-5 rounded-2xl bg-slate-50/70 space-y-3">
                     <div class="flex justify-between items-center">
                         <h3 class="text-xs font-extrabold text-slate-800 uppercase flex items-center gap-2">
-                            <i data-lucide="scan-line" class="w-4 h-4 text-indigo-600"></i> Posturas Biomecánicas de Referencia con Ángulo Actualizado
+                            <i data-lucide="scan-line" class="w-4 h-4 text-indigo-600"></i> Posturas Biomecánicas de Referencia con Ángulo Actualizado (Punto 0° en Hombro)
                         </h3>
                         <span class="text-[11px] text-slate-500">Diagramas estáticos de referencia con superposición dinámica de medición</span>
                     </div>
@@ -633,7 +902,7 @@ HTML_TEMPLATE = """
                                 <circle cx="145" cy="45" r="4" fill="#dc2626"/>
                             </svg>
                             <div class="mt-2 bg-sky-50 border border-sky-200 px-3 py-1 rounded-full text-xs font-black text-sky-800">
-                                Ángulo de Entrada: <span id="ref-angle-entry">30°</span>
+                                Ángulo de Entrada: <span id="ref-angle-entry">0°</span>
                             </div>
                         </div>
 
@@ -649,7 +918,7 @@ HTML_TEMPLATE = """
                                 <circle cx="145" cy="68" r="4.5" fill="#dc2626"/>
                             </svg>
                             <div class="mt-2 bg-indigo-50 border border-indigo-200 px-3 py-1 rounded-full text-xs font-black text-indigo-800">
-                                Ángulo Codo / Hombro: <span id="ref-angle-pull">90°</span> / <span id="ref-angle-shoulder">56°</span>
+                                Ángulo Codo / Hombro: <span id="ref-angle-pull">0°</span> / <span id="ref-angle-shoulder">0°</span>
                             </div>
                         </div>
 
@@ -665,7 +934,7 @@ HTML_TEMPLATE = """
                                 <circle cx="85" cy="75" r="4" fill="#dc2626"/>
                             </svg>
                             <div class="mt-2 bg-emerald-50 border border-emerald-200 px-3 py-1 rounded-full text-xs font-black text-emerald-800">
-                                Ángulo de Extensión: <span id="ref-angle-push">152°</span>
+                                Ángulo de Extensión: <span id="ref-angle-push">0°</span>
                             </div>
                         </div>
                     </div>
@@ -902,7 +1171,7 @@ HTML_TEMPLATE = """
             }
             loadInitialData();
             setInterval(pollPoolSessionStatus, 2000);
-            setInterval(pollSmartwatchLive, 2000);
+            setInterval(pollSmartwatchLive, 1500);
         });
 
         async function loadInitialData() {
@@ -922,7 +1191,7 @@ HTML_TEMPLATE = """
             }
         }
 
-        // SINCRONIZACIÓN EN VIVO CON EL SMARTWATCH ESP32
+        // SINCRONIZACIÓN EN VIVO CON EL SMARTWATCH ESP32 + MPU-9250 CALIBRADO A 0°
         async function pollSmartwatchLive() {
             try {
                 const res = await fetch('/api/smartwatch/status');
@@ -946,20 +1215,50 @@ HTML_TEMPLATE = """
                         bannerSw.className = "text-xs font-black text-emerald-300";
                     }
                     if (badgeLive) {
-                        badgeLive.textContent = `● Smartwatch Conectado (${sw.hand} | Bat: ${sw.battery}%)`;
+                        badgeLive.textContent = `● MPU-9250 En Vivo (${sw.hand} | Bat: ${sw.battery}%)`;
                         badgeLive.className = "bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full text-xs font-bold animate-pulse";
                     }
+
+                    // Actualizar tarjetas de Codo, Hombro y Fuerza en tiempo real desde el punto 0°
+                    const cMin = sw.elbow_min || 0;
+                    const cMax = sw.elbow_max || 0;
+                    const cIqr = ((cMax - cMin) * 0.5).toFixed(1);
                     document.getElementById('sw-codo-avg').textContent = `${sw.elbow_angle}°`;
+                    document.getElementById('sw-codo-disp').textContent = `Mín: ${cMin}° | Máx: ${cMax}° (IQR: ${cIqr}°)`;
+
+                    const hMin = sw.shoulder_min || 0;
+                    const hMax = sw.shoulder_max || 0;
+                    const hIqr = ((hMax - hMin) * 0.5).toFixed(1);
                     document.getElementById('sw-hombro-avg').textContent = `${sw.shoulder_angle}°`;
-                    document.getElementById('ref-angle-pull').textContent = `${sw.elbow_angle}°`;
+                    document.getElementById('sw-hombro-disp').textContent = `Mín: ${hMin}° | Máx: ${hMax}° (IQR: ${hIqr}°)`;
+
+                    const fLeft = sw.force_left || sw.force_n || 0;
+                    const fRight = sw.force_right || sw.force_n || 0;
+                    document.getElementById('sw-fuerza-avg').textContent = `${fLeft} N / ${fRight} N`;
+                    document.getElementById('sw-fuerza-disp').textContent = `Lectura dinámica actual: ${sw.force_n} N`;
+
+                    // Actualizar imágenes estáticas de referencia
+                    const pEntry = sw.phase_entry || 0;
+                    const pPull = sw.elbow_angle || 0;
+                    const pPush = sw.phase_push || 0;
+                    document.getElementById('ref-angle-entry').textContent = `${pEntry}°`;
+                    document.getElementById('ref-angle-pull').textContent = `${pPull}°`;
                     document.getElementById('ref-angle-shoulder').textContent = `${sw.shoulder_angle}°`;
+                    document.getElementById('ref-angle-push').textContent = `${pPush}°`;
+
+                    // Actualizar gráficas de Smartwatch en vivo
+                    renderSmartwatchCharts(
+                        [fLeft, fLeft, fLeft, fLeft, fLeft, fLeft],
+                        [fRight, fRight, fRight, fRight, fRight, fRight],
+                        [pEntry, pPull, pPush]
+                    );
                 } else {
                     if (bannerSw) {
                         bannerSw.textContent = "⚪ Desconectado / Deep Sleep";
                         bannerSw.className = "text-xs font-bold text-sky-200";
                     }
                     if (badgeLive) {
-                        badgeLive.textContent = "⚪ Smartwatch en Espera / Histórico";
+                        badgeLive.textContent = "⚪ Smartwatch en Espera / Mostrando Histórico";
                         badgeLive.className = "bg-slate-200 text-slate-700 px-3 py-1 rounded-full text-xs font-bold";
                     }
                 }
@@ -1410,7 +1709,7 @@ HTML_TEMPLATE = """
                         return `
                             <div class="bg-sky-50/70 p-4 rounded-2xl border border-sky-100 text-xs space-y-2">
                                 <div class="flex flex-wrap justify-between items-center gap-2">
-                                    <span class="font-black text-sky-950 text-sm">${item.title}</span>
+                                    <span class="font-black text-sky-900 text-sm">${item.title}</span>
                                     <div class="flex gap-2">
                                         <span class="bg-indigo-100 text-indigo-800 px-2.5 py-0.5 rounded-full font-bold">🏊‍♂️ ${item.style}</span>
                                         <span class="bg-emerald-100 text-emerald-800 px-2.5 py-0.5 rounded-full font-bold">📏 ${item.distance}</span>
@@ -1623,237 +1922,425 @@ HTML_TEMPLATE = """
 """
 
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]{2,}$")
-VALID_DOMAINS = {"gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "swiitroom.com", "icloud.com", "edu.pe", "upn.pe", "pucp.edu.pe", "uni.edu.pe", "upc.edu.pe"}
+VALID_DOMAINS = {
+    "gmail.com",
+    "hotmail.com",
+    "outlook.com",
+    "yahoo.com",
+    "swiitroom.com",
+    "icloud.com",
+    "edu.pe",
+    "upn.pe",
+    "pucp.edu.pe",
+    "uni.edu.pe",
+    "upc.edu.pe",
+}
+
 
 def is_valid_email_address(email):
-    if not EMAIL_REGEX.match(email):
-        return False
-    domain = email.split("@")[-1].lower()
-    return domain in VALID_DOMAINS or domain.endswith(".edu.pe") or domain.endswith(".com") or domain.endswith(".org")
+  if not EMAIL_REGEX.match(email):
+    return False
+  domain = email.split("@")[-1].lower()
+  return (
+      domain in VALID_DOMAINS
+      or domain.endswith(".edu.pe")
+      or domain.endswith(".com")
+      or domain.endswith(".org")
+  )
+
 
 @app.route("/")
 def index():
-    return render_template_string(HTML_TEMPLATE)
+  return render_template_string(HTML_TEMPLATE)
+
 
 @app.route("/api/athletes", methods=["GET"])
 def get_athletes():
-    return jsonify(users_db.get("athletes", []))
+  return jsonify(users_db.get("athletes", []))
+
 
 @app.route("/api/sessions", methods=["GET"])
 def get_sessions():
-    return jsonify(users_db.get("sessions", []))
+  return jsonify(users_db.get("sessions", []))
+
 
 @app.route("/api/admin/users", methods=["GET"])
 def get_all_users_admin():
-    return jsonify({
-        "admins": users_db.get("admins", []),
-        "coaches": users_db.get("coaches", []),
-        "athletes": users_db.get("athletes", [])
-    })
+  return jsonify({
+      "admins": users_db.get("admins", []),
+      "coaches": users_db.get("coaches", []),
+      "athletes": users_db.get("athletes", []),
+  })
+
 
 @app.route("/api/register", methods=["POST"])
 def register_user():
-    data = request.json
-    name = data.get("name", "").strip()
-    email = data.get("email", "").strip().lower()
-    password = data.get("password", "").strip()
-    role = data.get("role", "athlete")
+  data = request.json
+  name = data.get("name", "").strip()
+  email = data.get("email", "").strip().lower()
+  password = data.get("password", "").strip()
+  role = data.get("role", "athlete")
 
-    if not name or not email or not password:
-        return jsonify({"status": "error", "message": "Todos los campos son obligatorios."}), 400
+  if not name or not email or not password:
+    return (
+        jsonify(
+            {"status": "error", "message": "Todos los campos son obligatorios."}
+        ),
+        400,
+    )
 
-    if not is_valid_email_address(email):
-        return jsonify({"status": "error", "message": "El correo ingresado no tiene un formato o dominio válido existente."}), 400
+  if not is_valid_email_address(email):
+    return (
+        jsonify({
+            "status": "error",
+            "message": (
+                "El correo ingresado no tiene un formato o dominio válido"
+                " existente."
+            ),
+        }),
+        400,
+    )
 
-    role_map = {"coach": "coaches", "admin": "admins", "athlete": "athletes"}
-    target_key = role_map.get(role, "athletes")
+  role_map = {"coach": "coaches", "admin": "admins", "athlete": "athletes"}
+  target_key = role_map.get(role, "athletes")
 
-    all_users = users_db.get("admins", []) + users_db.get("coaches", []) + users_db.get("athletes", [])
-    if any(u["email"].lower() == email for u in all_users):
-        return jsonify({"status": "error", "message": "Este correo electrónico ya se encuentra registrado."}), 400
+  all_users = (
+      users_db.get("admins", [])
+      + users_db.get("coaches", [])
+      + users_db.get("athletes", [])
+  )
+  if any(u["email"].lower() == email for u in all_users):
+    return (
+        jsonify({
+            "status": "error",
+            "message": "Este correo electrónico ya se encuentra registrado.",
+        }),
+        400,
+    )
 
-    new_user = {"name": name, "email": email, "password": password, "role": role}
-    users_db[target_key].append(new_user)
-    save_users(users_db)
-    return jsonify({"status": "success", "user": new_user})
+  new_user = {"name": name, "email": email, "password": password, "role": role}
+  users_db[target_key].append(new_user)
+  save_users(users_db)
+  return jsonify({"status": "success", "user": new_user})
+
 
 @app.route("/api/login", methods=["POST"])
 def login_user():
-    data = request.json
-    email = data.get("email", "").strip().lower()
-    password = data.get("password", "").strip()
-    role = data.get("role", "athlete")
+  data = request.json
+  email = data.get("email", "").strip().lower()
+  password = data.get("password", "").strip()
+  role = data.get("role", "athlete")
 
-    role_map = {"coach": "coaches", "admin": "admins", "athlete": "athletes"}
-    pool = users_db.get(role_map.get(role, "athletes"), [])
+  role_map = {"coach": "coaches", "admin": "admins", "athlete": "athletes"}
+  pool = users_db.get(role_map.get(role, "athletes"), [])
 
-    found = next((u for u in pool if u["email"].lower() == email and u["password"] == password), None)
-    if found:
-        return jsonify({"status": "success", "user": found})
-    return jsonify({"status": "error", "message": "Usuario, contraseña, correo o rol incorrectos."}), 401
+  found = next(
+      (
+          u
+          for u in pool
+          if u["email"].lower() == email and u["password"] == password
+      ),
+      None,
+  )
+  if found:
+    return jsonify({"status": "success", "user": found})
+  return (
+      jsonify({
+          "status": "error",
+          "message": "Usuario, contraseña, correo o rol incorrectos.",
+      }),
+      401,
+  )
+
 
 @app.route("/api/recover", methods=["POST"])
 def recover_account():
-    data = request.json
-    email = data.get("email", "").strip().lower()
-    new_password = data.get("new_password", "").strip()
+  data = request.json
+  email = data.get("email", "").strip().lower()
+  new_password = data.get("new_password", "").strip()
 
-    if not email or len(new_password) < 3:
-        return jsonify({"status": "error", "message": "Ingresa un correo válido y una nueva contraseña (mínimo 3 caracteres)."}), 400
+  if not email or len(new_password) < 3:
+    return (
+        jsonify({
+            "status": "error",
+            "message": (
+                "Ingresa un correo válido y una nueva contraseña (mínimo 3"
+                " caracteres)."
+            ),
+        }),
+        400,
+    )
 
-    for group in ["athletes", "coaches", "admins"]:
-        for user in users_db.get(group, []):
-            if user["email"].lower() == email:
-                user["password"] = new_password
-                save_users(users_db)
-                return jsonify({"status": "success", "message": f"Contraseña actualizada correctamente para {user['name']} ({user['role']}). Ya puedes iniciar sesión."})
+  for group in ["athletes", "coaches", "admins"]:
+    for user in users_db.get(group, []):
+      if user["email"].lower() == email:
+        user["password"] = new_password
+        save_users(users_db)
+        return jsonify({
+            "status": "success",
+            "message": (
+                f"Contraseña actualizada correctamente para {user['name']}"
+                f" ({user['role']}). Ya puedes iniciar sesión."
+            ),
+        })
 
-    return jsonify({"status": "error", "message": "No se encontró ninguna cuenta asociada a ese correo electrónico."}), 404
+  return (
+      jsonify({
+          "status": "error",
+          "message": (
+              "No se encontró ninguna cuenta asociada a ese correo electrónico."
+          ),
+      }),
+      404,
+  )
+
 
 @app.route("/api/session/status", methods=["GET"])
 def get_session_status():
-    return jsonify(active_pool_session)
+  return jsonify(active_pool_session)
+
 
 @app.route("/api/session/start", methods=["POST"])
 def start_pool_session():
-    if active_pool_session["active"]:
-        return jsonify({"status": "error", "message": "Ya existe un entrenamiento activo en piscina. Finalízalo antes de iniciar otro."}), 400
+  if active_pool_session["active"]:
+    return (
+        jsonify({
+            "status": "error",
+            "message": (
+                "Ya existe un entrenamiento activo en piscina. Finalízalo antes"
+                " de iniciar otro."
+            ),
+        }),
+        400,
+    )
 
-    data = request.json
-    active_pool_session["active"] = True
-    active_pool_session["athlete"] = data.get("athlete")
-    active_pool_session["style"] = data.get("style", "Crol / Libre")
-    active_pool_session["distance"] = data.get("distance", "50 m")
-    active_pool_session["coach"] = data.get("coach", "Pepe Gómez")
-    active_pool_session["routine_title"] = data.get("routine_title", "Sesión en Piscina")
-    active_pool_session["start_timestamp"] = time.time()
-    return jsonify({"status": "success", "session": active_pool_session})
+  data = request.json
+  active_pool_session["active"] = True
+  active_pool_session["athlete"] = data.get("athlete")
+  active_pool_session["style"] = data.get("style", "Crol / Libre")
+  active_pool_session["distance"] = data.get("distance", "50 m")
+  active_pool_session["coach"] = data.get("coach", "Pepe Gómez")
+  active_pool_session["routine_title"] = data.get(
+      "routine_title", "Sesión en Piscina"
+  )
+  active_pool_session["start_timestamp"] = time.time()
+  return jsonify({"status": "success", "session": active_pool_session})
+
 
 @app.route("/api/session/stop", methods=["POST"])
 def stop_pool_session():
-    if not active_pool_session["active"]:
-        return jsonify({"status": "error", "message": "No hay ninguna sesión en curso."}), 400
+  if not active_pool_session["active"]:
+    return (
+        jsonify(
+            {"status": "error", "message": "No hay ninguna sesión en curso."}
+        ),
+        400,
+    )
 
-    elapsed = round(max(12.5, time.time() - active_pool_session["start_timestamp"]), 2)
-    dist_m = parse_distance_meters(active_pool_session["distance"])
-    speed_ms = round(dist_m / elapsed, 2)
-    split_50 = round(elapsed if dist_m <= 50 else (elapsed / (dist_m / 50.0)), 2)
+  elapsed = round(
+      max(12.5, time.time() - active_pool_session["start_timestamp"]), 2
+  )
+  dist_m = parse_distance_meters(active_pool_session["distance"])
+  speed_ms = round(dist_m / elapsed, 2)
+  split_50 = round(
+      elapsed if dist_m <= 50 else (elapsed / (dist_m / 50.0)), 2
+  )
 
-    # Si el Smartwatch envió datos recientemente, usar sus lecturas reales para la sesión guardada
-    sw_active = (time.time() - smartwatch_live_state["last_seen"]) <= 15
-    elbow_avg = smartwatch_live_state["elbow_angle"] if sw_active else 89
-    shoulder_avg = smartwatch_live_state["shoulder_angle"] if sw_active else 56
-    base_force = smartwatch_live_state["force_n"] if sw_active else 430
+  # Si el Smartwatch envió datos recientemente, guardar sus lecturas reales del MPU-9250 en el historial
+  sw_active = (time.time() - smartwatch_live_state["last_seen"]) <= 15
+  elbow_avg = (
+      smartwatch_live_state["elbow_angle"]
+      if sw_active and smartwatch_live_state["elbow_angle"] > 0
+      else 89
+  )
+  elbow_min = (
+      smartwatch_live_state["elbow_min"]
+      if sw_active and smartwatch_live_state["elbow_min"] > 0
+      else max(0, elbow_avg - 3)
+  )
+  elbow_max = (
+      smartwatch_live_state["elbow_max"]
+      if sw_active and smartwatch_live_state["elbow_max"] > 0
+      else min(165, elbow_avg + 3)
+  )
 
-    new_id = f"SES-{len(users_db.get('sessions', [])) + 1:03d}"
-    new_session = {
-        "id": new_id,
-        "athlete": active_pool_session["athlete"],
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "style": active_pool_session["style"],
-        "distance": active_pool_session["distance"],
-        "distance_m": dist_m,
-        "time_sec": elapsed,
-        "split_50m": split_50,
-        "speed_ms": speed_ms,
-        "elbow_angle": {
-            "avg": elbow_avg,
-            "min": max(70, elbow_avg - 3),
-            "max": min(110, elbow_avg + 3),
-            "iqr": 3.0,
-            "phase_entry": 31,
-            "phase_pull": elbow_avg,
-            "phase_push": 151
-        },
-        "shoulder_angle": {
-            "avg": shoulder_avg,
-            "min": max(40, shoulder_avg - 4),
-            "max": min(75, shoulder_avg + 3),
-            "iqr": 2.8
-        },
-        "force_left": {
-            "avg": base_force,
-            "min": base_force - 14,
-            "max": base_force + 14,
-            "strokes": [base_force - 6, base_force + 2, base_force - 3, base_force + 8, base_force - 2, base_force + 2]
-        },
-        "force_right": {
-            "avg": base_force + 8,
-            "min": base_force - 8,
-            "max": base_force + 20,
-            "strokes": [base_force + 2, base_force + 10, base_force + 6, base_force + 14, base_force + 7, base_force + 9]
-        }
-    }
+  shoulder_avg = (
+      smartwatch_live_state["shoulder_angle"]
+      if sw_active and smartwatch_live_state["shoulder_angle"] > 0
+      else 56
+  )
+  shoulder_min = (
+      smartwatch_live_state["shoulder_min"]
+      if sw_active and smartwatch_live_state["shoulder_min"] > 0
+      else max(0, shoulder_avg - 3)
+  )
+  shoulder_max = (
+      smartwatch_live_state["shoulder_max"]
+      if sw_active and smartwatch_live_state["shoulder_max"] > 0
+      else min(120, shoulder_avg + 3)
+  )
 
-    users_db.setdefault("sessions", []).append(new_session)
-    save_users(users_db)
+  f_left = (
+      smartwatch_live_state["force_left"]
+      if sw_active and smartwatch_live_state["force_left"] > 0
+      else 428
+  )
+  f_right = (
+      smartwatch_live_state["force_right"]
+      if sw_active and smartwatch_live_state["force_right"] > 0
+      else 436
+  )
 
-    active_pool_session["active"] = False
-    active_pool_session["athlete"] = None
-    active_pool_session["start_timestamp"] = None
+  new_id = f"SES-{len(users_db.get('sessions', [])) + 1:03d}"
+  new_session = {
+      "id": new_id,
+      "athlete": active_pool_session["athlete"],
+      "date": datetime.now().strftime("%Y-%m-%d"),
+      "style": active_pool_session["style"],
+      "distance": active_pool_session["distance"],
+      "distance_m": dist_m,
+      "time_sec": elapsed,
+      "split_50m": split_50,
+      "speed_ms": speed_ms,
+      "elbow_angle": {
+          "avg": elbow_avg,
+          "min": elbow_min,
+          "max": elbow_max,
+          "iqr": round(max(1.5, (elbow_max - elbow_min) * 0.5), 1),
+          "phase_entry": (
+              smartwatch_live_state["phase_entry"]
+              if sw_active and smartwatch_live_state["phase_entry"] > 0
+              else 30
+          ),
+          "phase_pull": elbow_avg,
+          "phase_push": (
+              smartwatch_live_state["phase_push"]
+              if sw_active and smartwatch_live_state["phase_push"] > 0
+              else 151
+          ),
+      },
+      "shoulder_angle": {
+          "avg": shoulder_avg,
+          "min": shoulder_min,
+          "max": shoulder_max,
+          "iqr": round(max(1.5, (shoulder_max - shoulder_min) * 0.5), 1),
+      },
+      "force_left": {
+          "avg": f_left,
+          "min": max(0, f_left - 14),
+          "max": f_left + 14,
+          "strokes": [
+              max(0, f_left - 6),
+              f_left + 2,
+              max(0, f_left - 3),
+              f_left + 8,
+              max(0, f_left - 2),
+              f_left + 2,
+          ],
+      },
+      "force_right": {
+          "avg": f_right,
+          "min": max(0, f_right - 14),
+          "max": f_right + 14,
+          "strokes": [
+              max(0, f_right - 5),
+              f_right + 3,
+              max(0, f_right - 2),
+              f_right + 7,
+              max(0, f_right - 1),
+              f_right + 3,
+          ],
+      },
+  }
 
-    return jsonify({"status": "success", "session": new_session})
+  users_db.setdefault("sessions", []).append(new_session)
+  save_users(users_db)
+
+  active_pool_session["active"] = False
+  active_pool_session["athlete"] = None
+  active_pool_session["start_timestamp"] = None
+
+  return jsonify({"status": "success", "session": new_session})
+
 
 @app.route("/api/activities/<athlete>", methods=["GET"])
 def get_activities(athlete):
-    return jsonify(users_db.get("routines", {}).get(athlete, []))
+  return jsonify(users_db.get("routines", {}).get(athlete, []))
+
 
 @app.route("/api/activities/add", methods=["POST"])
 def add_activity():
-    data = request.json
-    athlete = data.get("athlete")
-    style = data.get("style", "Crol / Libre")
-    distance = data.get("distance", "100 m")
-    title = data.get("title")
-    desc = data.get("desc")
-    assigned_by = data.get("assigned_by", "Entrenador")
+  data = request.json
+  athlete = data.get("athlete")
+  style = data.get("style", "Crol / Libre")
+  distance = data.get("distance", "100 m")
+  title = data.get("title")
+  desc = data.get("desc")
+  assigned_by = data.get("assigned_by", "Entrenador")
 
-    if athlete and title and desc:
-        routines = users_db.setdefault("routines", {})
-        routines.setdefault(athlete, []).append({
-            "id": f"rut-{int(time.time())}",
-            "style": style,
-            "distance": distance,
-            "title": title,
-            "desc": desc,
-            "assigned_by": assigned_by,
-            "date": datetime.now().strftime("%Y-%m-%d")
-        })
-        save_users(users_db)
-        return jsonify({"status": "success"})
-    return jsonify({"status": "error"}), 400
+  if athlete and title and desc:
+    routines = users_db.setdefault("routines", {})
+    routines.setdefault(athlete, []).append({
+        "id": f"rut-{int(time.time())}",
+        "style": style,
+        "distance": distance,
+        "title": title,
+        "desc": desc,
+        "assigned_by": assigned_by,
+        "date": datetime.now().strftime("%Y-%m-%d"),
+    })
+    save_users(users_db)
+    return jsonify({"status": "success"})
+  return jsonify({"status": "error"}), 400
 
-# RUTAS DE RECEPCIÓN Y ESTADO EN VIVO DEL SMARTWATCH IoT (ESP32)
+
+# RUTAS DE RECEPCIÓN Y ESTADO EN VIVO DEL SMARTWATCH IoT (ESP32 + MPU-9250)
 @app.route("/api/smartwatch/telemetry", methods=["POST"])
 def receive_smartwatch_telemetry():
-    data = request.json or {}
-    smartwatch_live_state["connected"] = True
-    smartwatch_live_state["hand"] = data.get("hand", "Izquierda (Left)")
-    smartwatch_live_state["is_left"] = data.get("is_left", True)
-    smartwatch_live_state["battery"] = data.get("battery", 100)
-    smartwatch_live_state["uptime_sec"] = data.get("uptime_sec", 0)
-    smartwatch_live_state["elbow_angle"] = data.get("elbow_angle", 88)
-    smartwatch_live_state["shoulder_angle"] = data.get("shoulder_angle", 55)
-    smartwatch_live_state["force_n"] = data.get("force_n", 425)
-    smartwatch_live_state["last_seen"] = time.time()
-    return jsonify({"status": "ok", "active_session": active_pool_session["active"]})
+  data = request.json or {}
+  smartwatch_live_state["connected"] = True
+  smartwatch_live_state["hand"] = data.get("hand", "Izquierda (Left)")
+  smartwatch_live_state["is_left"] = data.get("is_left", True)
+  smartwatch_live_state["battery"] = data.get("battery", 100)
+  smartwatch_live_state["uptime_sec"] = data.get("uptime_sec", 0)
+  smartwatch_live_state["elbow_angle"] = data.get("elbow_angle", 0)
+  smartwatch_live_state["elbow_min"] = data.get("elbow_min", 0)
+  smartwatch_live_state["elbow_max"] = data.get("elbow_max", 0)
+  smartwatch_live_state["shoulder_angle"] = data.get("shoulder_angle", 0)
+  smartwatch_live_state["shoulder_min"] = data.get("shoulder_min", 0)
+  smartwatch_live_state["shoulder_max"] = data.get("shoulder_max", 0)
+  smartwatch_live_state["phase_entry"] = data.get("phase_entry", 0)
+  smartwatch_live_state["phase_pull"] = data.get("phase_pull", 0)
+  smartwatch_live_state["phase_push"] = data.get("phase_push", 0)
+  smartwatch_live_state["force_n"] = data.get("force_n", 0)
+  smartwatch_live_state["force_left"] = data.get("force_left", 0)
+  smartwatch_live_state["force_right"] = data.get("force_right", 0)
+  smartwatch_live_state["strokes"] = data.get("strokes", 0)
+  smartwatch_live_state["last_seen"] = time.time()
+  return jsonify(
+      {"status": "ok", "active_session": active_pool_session["active"]}
+  )
+
 
 @app.route("/api/smartwatch/status", methods=["GET"])
 def get_smartwatch_status():
-    if time.time() - smartwatch_live_state["last_seen"] > 8:
-        smartwatch_live_state["connected"] = False
-    return jsonify(smartwatch_live_state)
+  if time.time() - smartwatch_live_state["last_seen"] > 8:
+    smartwatch_live_state["connected"] = False
+  return jsonify(smartwatch_live_state)
+
 
 @app.route("/stream")
 def stream():
-    def event_stream():
-        while True:
-            try:
-                line = data_queue.get(timeout=1)
-                yield f"data: {line}\n\n"
-            except queue.Empty:
-                yield "data: \n\n"
-    return Response(event_stream(), mimetype="text/event-stream")
+  def event_stream():
+    while True:
+      try:
+        line = data_queue.get(timeout=1)
+        yield f"data: {line}\n\n"
+      except queue.Empty:
+        yield "data: \n\n"
+
+  return Response(event_stream(), mimetype="text/event-stream")
+
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5001)
+  app.run(host="0.0.0.0", port=5001)
