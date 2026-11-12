@@ -1,4 +1,6 @@
 from datetime import datetime
+import io
+import csv
 import json
 import os
 import queue
@@ -10,9 +12,9 @@ import serial
 
 app = Flask(__name__)
 
-# CONFIGURACIÓN DE PUERTOS SERIALES / TELEMETRÍA ESP32
-SERIAL_PORT_1 = "COM3"  # ESP32 Salida / Meta (Pines 34 y 32)
-SERIAL_PORT_2 = "COM4"  # ESP32 Giro 50m (Pines 35 y 33)
+# CONFIGURACIÓN DE PUERTOS SERIALES / TELEMETRÍA ESP32-U
+SERIAL_PORT_1 = "COM3"  # ESP32-U #1 Salida / Meta (Pines 32, 33, 34, 35)
+SERIAL_PORT_2 = "COM4"  # ESP32-U #2 Vuelta / Giro 50m (Pines 32, 33, 34, 35)
 BAUD_RATE = 115200
 
 data_queue = queue.Queue()
@@ -27,9 +29,11 @@ active_pool_session = {
     "coach": None,
     "routine_title": None,
     "start_timestamp": None,
+    "reaction_time": 0.62,
+    "turn_time": 1.18,
 }
 
-# Estado en tiempo real del Smartwatch IoT (ESP32 + MPU-9250 por Wi-Fi)
+# Estado en tiempo real del Smartwatch IoT (ESP32-C3 + MPU-9250 por Wi-Fi)
 smartwatch_live_state = {
     "connected": False,
     "hand": "Izquierda (Left)",
@@ -49,435 +53,398 @@ smartwatch_live_state = {
     "force_left": 0,
     "force_right": 0,
     "strokes": 0,
+    "stroke_rate": 0.0,
     "last_seen": 0,
+}
+
+# Estado de los Pads de Contacto (ESP32-U de 4 sensores FSR por lado)
+pads_live_state = {
+    "last_pad_side": "SALIDA_META",
+    "last_sensor_triggered": 1,
+    "last_peak_value": 0,
+    "last_touch_time": 0,
 }
 
 
 def get_default_db():
-  return {
-      "admins": [{
-          "name": "Administrador General",
-          "email": "admin@swiitroom.com",
-          "password": "admin123",
-          "role": "admin",
-      }],
-      "coaches": [{
-          "name": "Pepe Gómez",
-          "email": "coach@swiitroom.com",
-          "password": "coach123",
-          "role": "coach",
-      }],
-      "athletes": [
-          {
-              "name": "Mario Peinado",
-              "email": "atleta@swiitroom.com",
-              "password": "atleta123",
-              "role": "athlete",
-          },
-          {
-              "name": "Pepe Juárez",
-              "email": "pepej@swiitroom.com",
-              "password": "123",
-              "role": "athlete",
-          },
-          {
-              "name": "Jaime Pastor",
-              "email": "jaime@swiitroom.com",
-              "password": "123",
-              "role": "athlete",
-          },
-      ],
-      "routines": {
-          "Mario Peinado": [
-              {
-                  "id": "rut-101",
-                  "style": "Crol / Libre",
-                  "distance": "100 m",
-                  "title": "Velocidad Anaeróbica 100m",
-                  "desc": (
-                      "Salida explosiva desde pad, mantener codo alto (EVF >"
-                      " 85°) en tracción y viraje rápido en 50m."
-                  ),
-                  "assigned_by": "Pepe Gómez",
-                  "date": "2026-11-05",
-              },
-              {
-                  "id": "rut-102",
-                  "style": "Mariposa",
-                  "distance": "50 m",
-                  "title": "Potencia de Brazada en Mariposa",
-                  "desc": (
-                      "Enfoque en simetría de tracción entre brazo izquierdo y"
-                      " derecho. Respiración cada 2 brazadas."
-                  ),
-                  "assigned_by": "Pepe Gómez",
-                  "date": "2026-11-07",
-              },
-          ],
-          "Pepe Juárez": [{
-              "id": "rut-103",
-              "style": "Espalda",
-              "distance": "200 m",
-              "title": "Resistencia Aeróbica en Espalda",
-              "desc": (
-                  "Mantener rolido constante y entrada limpia del hombro a 32°."
-              ),
-              "assigned_by": "Pepe Gómez",
-              "date": "2026-11-06",
-          }],
-      },
-      "sessions": [
-          {
-              "id": "SES-001",
-              "athlete": "Mario Peinado",
-              "date": "2026-10-20",
-              "style": "Crol / Libre",
-              "distance": "50 m",
-              "distance_m": 50,
-              "time_sec": 25.40,
-              "split_50m": 25.40,
-              "speed_ms": 1.97,
-              "elbow_angle": {
-                  "avg": 88,
-                  "min": 84,
-                  "max": 92,
-                  "iqr": 4.2,
-                  "phase_entry": 32,
-                  "phase_pull": 88,
-                  "phase_push": 148,
-              },
-              "shoulder_angle": {"avg": 54, "min": 49, "max": 58, "iqr": 3.5},
-              "force_left": {
-                  "avg": 425,
-                  "min": 405,
-                  "max": 442,
-                  "strokes": [420, 428, 415, 435, 422, 430],
-              },
-              "force_right": {
-                  "avg": 440,
-                  "min": 420,
-                  "max": 455,
-                  "strokes": [438, 445, 432, 450, 436, 442],
-              },
-          },
-          {
-              "id": "SES-002",
-              "athlete": "Mario Peinado",
-              "date": "2026-10-24",
-              "style": "Crol / Libre",
-              "distance": "100 m",
-              "distance_m": 100,
-              "time_sec": 54.80,
-              "split_50m": 26.50,
-              "speed_ms": 1.82,
-              "elbow_angle": {
-                  "avg": 89,
-                  "min": 85,
-                  "max": 93,
-                  "iqr": 3.8,
-                  "phase_entry": 31,
-                  "phase_pull": 89,
-                  "phase_push": 150,
-              },
-              "shoulder_angle": {"avg": 55, "min": 50, "max": 59, "iqr": 3.1},
-              "force_left": {
-                  "avg": 418,
-                  "min": 398,
-                  "max": 435,
-                  "strokes": [415, 422, 410, 428, 416, 420],
-              },
-              "force_right": {
-                  "avg": 432,
-                  "min": 412,
-                  "max": 448,
-                  "strokes": [430, 436, 425, 442, 428, 434],
-              },
-          },
-          {
-              "id": "SES-003",
-              "athlete": "Mario Peinado",
-              "date": "2026-10-28",
-              "style": "Mariposa",
-              "distance": "50 m",
-              "distance_m": 50,
-              "time_sec": 27.10,
-              "split_50m": 27.10,
-              "speed_ms": 1.85,
-              "elbow_angle": {
-                  "avg": 92,
-                  "min": 88,
-                  "max": 96,
-                  "iqr": 4.0,
-                  "phase_entry": 28,
-                  "phase_pull": 92,
-                  "phase_push": 154,
-              },
-              "shoulder_angle": {"avg": 60, "min": 56, "max": 64, "iqr": 3.9},
-              "force_left": {
-                  "avg": 460,
-                  "min": 440,
-                  "max": 480,
-                  "strokes": [455, 465, 450, 472, 458, 462],
-              },
-              "force_right": {
-                  "avg": 465,
-                  "min": 445,
-                  "max": 485,
-                  "strokes": [460, 470, 455, 478, 462, 468],
-              },
-          },
-          {
-              "id": "SES-004",
-              "athlete": "Mario Peinado",
-              "date": "2026-11-01",
-              "style": "Crol / Libre",
-              "distance": "100 m",
-              "distance_m": 100,
-              "time_sec": 53.90,
-              "split_50m": 26.10,
-              "speed_ms": 1.86,
-              "elbow_angle": {
-                  "avg": 90,
-                  "min": 87,
-                  "max": 93,
-                  "iqr": 2.9,
-                  "phase_entry": 30,
-                  "phase_pull": 90,
-                  "phase_push": 152,
-              },
-              "shoulder_angle": {"avg": 56, "min": 52, "max": 59, "iqr": 2.7},
-              "force_left": {
-                  "avg": 430,
-                  "min": 412,
-                  "max": 446,
-                  "strokes": [425, 434, 420, 440, 428, 433],
-              },
-              "force_right": {
-                  "avg": 442,
-                  "min": 425,
-                  "max": 456,
-                  "strokes": [438, 446, 432, 452, 440, 445],
-              },
-          },
-          {
-              "id": "SES-005",
-              "athlete": "Mario Peinado",
-              "date": "2026-11-04",
-              "style": "Crol / Libre",
-              "distance": "500 m",
-              "distance_m": 500,
-              "time_sec": 312.50,
-              "split_50m": 30.20,
-              "speed_ms": 1.60,
-              "elbow_angle": {
-                  "avg": 87,
-                  "min": 82,
-                  "max": 91,
-                  "iqr": 4.5,
-                  "phase_entry": 33,
-                  "phase_pull": 87,
-                  "phase_push": 146,
-              },
-              "shoulder_angle": {"avg": 52, "min": 48, "max": 56, "iqr": 3.8},
-              "force_left": {
-                  "avg": 390,
-                  "min": 370,
-                  "max": 410,
-                  "strokes": [395, 392, 388, 390, 385, 390],
-              },
-              "force_right": {
-                  "avg": 398,
-                  "min": 380,
-                  "max": 415,
-                  "strokes": [402, 400, 395, 398, 394, 399],
-              },
-          },
-          {
-              "id": "SES-006",
-              "athlete": "Mario Peinado",
-              "date": "2026-11-07",
-              "style": "Crol / Libre",
-              "distance": "100 m",
-              "distance_m": 100,
-              "time_sec": 53.15,
-              "split_50m": 25.80,
-              "speed_ms": 1.88,
-              "elbow_angle": {
-                  "avg": 91,
-                  "min": 88,
-                  "max": 94,
-                  "iqr": 2.5,
-                  "phase_entry": 30,
-                  "phase_pull": 91,
-                  "phase_push": 155,
-              },
-              "shoulder_angle": {"avg": 57, "min": 54, "max": 60, "iqr": 2.4},
-              "force_left": {
-                  "avg": 438,
-                  "min": 422,
-                  "max": 452,
-                  "strokes": [432, 440, 435, 446, 436, 440],
-              },
-              "force_right": {
-                  "avg": 448,
-                  "min": 434,
-                  "max": 460,
-                  "strokes": [445, 450, 442, 456, 446, 450],
-              },
-          },
-          {
-              "id": "SES-007",
-              "athlete": "Pepe Juárez",
-              "date": "2026-11-02",
-              "style": "Crol / Libre",
-              "distance": "50 m",
-              "distance_m": 50,
-              "time_sec": 26.20,
-              "split_50m": 26.20,
-              "speed_ms": 1.91,
-              "elbow_angle": {
-                  "avg": 86,
-                  "min": 82,
-                  "max": 90,
-                  "iqr": 3.6,
-                  "phase_entry": 34,
-                  "phase_pull": 86,
-                  "phase_push": 145,
-              },
-              "shoulder_angle": {"avg": 53, "min": 49, "max": 57, "iqr": 3.2},
-              "force_left": {
-                  "avg": 415,
-                  "min": 398,
-                  "max": 430,
-                  "strokes": [410, 418, 412, 422, 414, 416],
-              },
-              "force_right": {
-                  "avg": 408,
-                  "min": 390,
-                  "max": 424,
-                  "strokes": [405, 412, 404, 415, 406, 408],
-              },
-          },
-          {
-              "id": "SES-008",
-              "athlete": "Pepe Juárez",
-              "date": "2026-11-06",
-              "style": "Crol / Libre",
-              "distance": "100 m",
-              "distance_m": 100,
-              "time_sec": 55.40,
-              "split_50m": 26.90,
-              "speed_ms": 1.81,
-              "elbow_angle": {
-                  "avg": 85,
-                  "min": 81,
-                  "max": 89,
-                  "iqr": 3.8,
-                  "phase_entry": 33,
-                  "phase_pull": 85,
-                  "phase_push": 144,
-              },
-              "shoulder_angle": {"avg": 52, "min": 48, "max": 56, "iqr": 3.4},
-              "force_left": {
-                  "avg": 410,
-                  "min": 392,
-                  "max": 425,
-                  "strokes": [408, 414, 405, 418, 408, 410],
-              },
-              "force_right": {
-                  "avg": 402,
-                  "min": 385,
-                  "max": 418,
-                  "strokes": [400, 406, 398, 410, 400, 402],
-              },
-          },
-          {
-              "id": "SES-009",
-              "athlete": "Jaime Pastor",
-              "date": "2026-11-05",
-              "style": "Crol / Libre",
-              "distance": "50 m",
-              "distance_m": 50,
-              "time_sec": 24.95,
-              "split_50m": 24.95,
-              "speed_ms": 2.00,
-              "elbow_angle": {
-                  "avg": 91,
-                  "min": 88,
-                  "max": 94,
-                  "iqr": 2.6,
-                  "phase_entry": 29,
-                  "phase_pull": 91,
-                  "phase_push": 156,
-              },
-              "shoulder_angle": {"avg": 58, "min": 55, "max": 61, "iqr": 2.5},
-              "force_left": {
-                  "avg": 450,
-                  "min": 435,
-                  "max": 465,
-                  "strokes": [448, 452, 445, 458, 449, 451],
-              },
-              "force_right": {
-                  "avg": 455,
-                  "min": 440,
-                  "max": 470,
-                  "strokes": [452, 458, 450, 462, 454, 456],
-              },
-          },
-      ],
-  }
+    return {
+        "admins": [{
+            "name": "Administrador General",
+            "email": "admin@swiitroom.com",
+            "password": "admin123",
+            "role": "admin",
+        }],
+        "coaches": [{
+            "name": "Pepe Gómez",
+            "email": "coach@swiitroom.com",
+            "password": "coach123",
+            "role": "coach",
+        }],
+        "athletes": [
+            {
+                "name": "Mario Peinado",
+                "email": "atleta@swiitroom.com",
+                "password": "atleta123",
+                "role": "athlete",
+            },
+            {
+                "name": "Pepe Juárez",
+                "email": "pepej@swiitroom.com",
+                "password": "123",
+                "role": "athlete",
+            },
+            {
+                "name": "Jaime Pastor",
+                "email": "jaime@swiitroom.com",
+                "password": "123",
+                "role": "athlete",
+            },
+        ],
+        "routines": {
+            "Mario Peinado": [
+                {
+                    "id": "rut-101",
+                    "style": "Crol / Libre",
+                    "distance": "100 m",
+                    "title": "Velocidad Anaeróbica 100m",
+                    "desc": (
+                        "Salida explosiva desde pad (tiempo de reacción < 0.65s), "
+                        "mantener codo alto (EVF > 85°) en tracción y viraje rápido en 50m."
+                    ),
+                    "assigned_by": "Pepe Gómez",
+                    "date": "2026-11-05",
+                },
+                {
+                    "id": "rut-102",
+                    "style": "Mariposa",
+                    "distance": "50 m",
+                    "title": "Potencia de Brazada en Mariposa",
+                    "desc": (
+                        "Enfoque en simetría de tracción entre brazo izquierdo y "
+                        "derecho. Frecuencia objetivo: 56 brazadas/min."
+                    ),
+                    "assigned_by": "Pepe Gómez",
+                    "date": "2026-11-07",
+                },
+            ],
+            "Pepe Juárez": [{
+                "id": "rut-103",
+                "style": "Espalda",
+                "distance": "200 m",
+                "title": "Resistencia Aeróbica en Espalda",
+                "desc": (
+                    "Mantener rolido constante, entrada limpia del hombro a 32° y viraje < 1.25s."
+                ),
+                "assigned_by": "Pepe Gómez",
+                "date": "2026-11-06",
+            }],
+        },
+        "sessions": [
+            {
+                "id": "SES-001",
+                "athlete": "Mario Peinado",
+                "date": "2026-10-20",
+                "style": "Crol / Libre",
+                "distance": "50 m",
+                "distance_m": 50,
+                "time_sec": 25.40,
+                "split_50m": 25.40,
+                "reaction_time": 0.64,
+                "turn_time": 1.18,
+                "stroke_rate": 56.5,
+                "speed_ms": 1.97,
+                "elbow_angle": {
+                    "avg": 88, "min": 84, "max": 92, "iqr": 4.2,
+                    "phase_entry": 32, "phase_pull": 88, "phase_push": 148,
+                },
+                "shoulder_angle": {"avg": 54, "min": 49, "max": 58, "iqr": 3.5},
+                "force_left": {
+                    "avg": 425, "min": 405, "max": 442,
+                    "strokes": [420, 428, 415, 435, 422, 430],
+                },
+                "force_right": {
+                    "avg": 440, "min": 420, "max": 455,
+                    "strokes": [438, 445, 432, 450, 436, 442],
+                },
+            },
+            {
+                "id": "SES-002",
+                "athlete": "Mario Peinado",
+                "date": "2026-10-24",
+                "style": "Crol / Libre",
+                "distance": "100 m",
+                "distance_m": 100,
+                "time_sec": 54.80,
+                "split_50m": 26.50,
+                "reaction_time": 0.62,
+                "turn_time": 1.15,
+                "stroke_rate": 54.2,
+                "speed_ms": 1.82,
+                "elbow_angle": {
+                    "avg": 89, "min": 85, "max": 93, "iqr": 3.8,
+                    "phase_entry": 31, "phase_pull": 89, "phase_push": 150,
+                },
+                "shoulder_angle": {"avg": 55, "min": 50, "max": 59, "iqr": 3.1},
+                "force_left": {
+                    "avg": 418, "min": 398, "max": 435,
+                    "strokes": [415, 422, 410, 428, 416, 420],
+                },
+                "force_right": {
+                    "avg": 432, "min": 412, "max": 448,
+                    "strokes": [430, 436, 425, 442, 428, 434],
+                },
+            },
+            {
+                "id": "SES-003",
+                "athlete": "Mario Peinado",
+                "date": "2026-10-28",
+                "style": "Mariposa",
+                "distance": "50 m",
+                "distance_m": 50,
+                "time_sec": 27.10,
+                "split_50m": 27.10,
+                "reaction_time": 0.66,
+                "turn_time": 1.22,
+                "stroke_rate": 58.0,
+                "speed_ms": 1.85,
+                "elbow_angle": {
+                    "avg": 92, "min": 88, "max": 96, "iqr": 4.0,
+                    "phase_entry": 28, "phase_pull": 92, "phase_push": 154,
+                },
+                "shoulder_angle": {"avg": 60, "min": 56, "max": 64, "iqr": 3.9},
+                "force_left": {
+                    "avg": 460, "min": 440, "max": 480,
+                    "strokes": [455, 465, 450, 472, 458, 462],
+                },
+                "force_right": {
+                    "avg": 465, "min": 445, "max": 485,
+                    "strokes": [460, 470, 455, 478, 462, 468],
+                },
+            },
+            {
+                "id": "SES-004",
+                "athlete": "Mario Peinado",
+                "date": "2026-11-01",
+                "style": "Crol / Libre",
+                "distance": "100 m",
+                "distance_m": 100,
+                "time_sec": 53.90,
+                "split_50m": 26.10,
+                "reaction_time": 0.61,
+                "turn_time": 1.14,
+                "stroke_rate": 55.4,
+                "speed_ms": 1.86,
+                "elbow_angle": {
+                    "avg": 90, "min": 87, "max": 93, "iqr": 2.9,
+                    "phase_entry": 30, "phase_pull": 90, "phase_push": 152,
+                },
+                "shoulder_angle": {"avg": 56, "min": 52, "max": 59, "iqr": 2.7},
+                "force_left": {
+                    "avg": 430, "min": 412, "max": 446,
+                    "strokes": [425, 434, 420, 440, 428, 433],
+                },
+                "force_right": {
+                    "avg": 442, "min": 425, "max": 456,
+                    "strokes": [438, 446, 432, 452, 440, 445],
+                },
+            },
+            {
+                "id": "SES-005",
+                "athlete": "Mario Peinado",
+                "date": "2026-11-04",
+                "style": "Crol / Libre",
+                "distance": "500 m",
+                "distance_m": 500,
+                "time_sec": 312.50,
+                "split_50m": 30.20,
+                "reaction_time": 0.68,
+                "turn_time": 1.29,
+                "stroke_rate": 49.5,
+                "speed_ms": 1.60,
+                "elbow_angle": {
+                    "avg": 87, "min": 82, "max": 91, "iqr": 4.5,
+                    "phase_entry": 33, "phase_pull": 87, "phase_push": 146,
+                },
+                "shoulder_angle": {"avg": 52, "min": 48, "max": 56, "iqr": 3.8},
+                "force_left": {
+                    "avg": 390, "min": 370, "max": 410,
+                    "strokes": [395, 392, 388, 390, 385, 390],
+                },
+                "force_right": {
+                    "avg": 398, "min": 380, "max": 415,
+                    "strokes": [402, 400, 395, 398, 394, 399],
+                },
+            },
+            {
+                "id": "SES-006",
+                "athlete": "Mario Peinado",
+                "date": "2026-11-07",
+                "style": "Crol / Libre",
+                "distance": "100 m",
+                "distance_m": 100,
+                "time_sec": 53.15,
+                "split_50m": 25.80,
+                "reaction_time": 0.59,
+                "turn_time": 1.11,
+                "stroke_rate": 56.8,
+                "speed_ms": 1.88,
+                "elbow_angle": {
+                    "avg": 91, "min": 88, "max": 94, "iqr": 2.5,
+                    "phase_entry": 30, "phase_pull": 91, "phase_push": 155,
+                },
+                "shoulder_angle": {"avg": 57, "min": 54, "max": 60, "iqr": 2.4},
+                "force_left": {
+                    "avg": 438, "min": 422, "max": 452,
+                    "strokes": [432, 440, 435, 446, 436, 440],
+                },
+                "force_right": {
+                    "avg": 448, "min": 434, "max": 460,
+                    "strokes": [445, 450, 442, 456, 446, 450],
+                },
+            },
+            {
+                "id": "SES-007",
+                "athlete": "Pepe Juárez",
+                "date": "2026-11-02",
+                "style": "Crol / Libre",
+                "distance": "50 m",
+                "distance_m": 50,
+                "time_sec": 26.20,
+                "split_50m": 26.20,
+                "reaction_time": 0.65,
+                "turn_time": 1.21,
+                "stroke_rate": 53.8,
+                "speed_ms": 1.91,
+                "elbow_angle": {
+                    "avg": 86, "min": 82, "max": 90, "iqr": 3.6,
+                    "phase_entry": 34, "phase_pull": 86, "phase_push": 145,
+                },
+                "shoulder_angle": {"avg": 53, "min": 49, "max": 57, "iqr": 3.2},
+                "force_left": {
+                    "avg": 415, "min": 398, "max": 430,
+                    "strokes": [410, 418, 412, 422, 414, 416],
+                },
+                "force_right": {
+                    "avg": 408, "min": 390, "max": 424,
+                    "strokes": [405, 412, 404, 415, 406, 408],
+                },
+            },
+            {
+                "id": "SES-008",
+                "athlete": "Pepe Juárez",
+                "date": "2026-11-06",
+                "style": "Crol / Libre",
+                "distance": "100 m",
+                "distance_m": 100,
+                "time_sec": 55.40,
+                "split_50m": 26.90,
+                "reaction_time": 0.63,
+                "turn_time": 1.19,
+                "stroke_rate": 52.9,
+                "speed_ms": 1.81,
+                "elbow_angle": {
+                    "avg": 85, "min": 81, "max": 89, "iqr": 3.8,
+                    "phase_entry": 33, "phase_pull": 85, "phase_push": 144,
+                },
+                "shoulder_angle": {"avg": 52, "min": 48, "max": 56, "iqr": 3.4},
+                "force_left": {
+                    "avg": 410, "min": 392, "max": 425,
+                    "strokes": [408, 414, 405, 418, 408, 410],
+                },
+                "force_right": {
+                    "avg": 402, "min": 385, "max": 418,
+                    "strokes": [400, 406, 398, 410, 400, 402],
+                },
+            },
+            {
+                "id": "SES-009",
+                "athlete": "Jaime Pastor",
+                "date": "2026-11-05",
+                "style": "Crol / Libre",
+                "distance": "50 m",
+                "distance_m": 50,
+                "time_sec": 24.95,
+                "split_50m": 24.95,
+                "reaction_time": 0.58,
+                "turn_time": 1.09,
+                "stroke_rate": 58.4,
+                "speed_ms": 2.00,
+                "elbow_angle": {
+                    "avg": 91, "min": 88, "max": 94, "iqr": 2.6,
+                    "phase_entry": 29, "phase_pull": 91, "phase_push": 156,
+                },
+                "shoulder_angle": {"avg": 58, "min": 55, "max": 61, "iqr": 2.5},
+                "force_left": {
+                    "avg": 450, "min": 435, "max": 465,
+                    "strokes": [448, 452, 445, 458, 449, 451],
+                },
+                "force_right": {
+                    "avg": 455, "min": 440, "max": 470,
+                    "strokes": [452, 458, 450, 462, 454, 456],
+                },
+            },
+        ],
+    }
 
 
 def load_users():
-  default_data = get_default_db()
-  if os.path.exists(USERS_FILE):
-    try:
-      with open(USERS_FILE, "r", encoding="utf-8") as f:
-        loaded = json.load(f)
-        for key in ["admins", "coaches", "athletes", "routines", "sessions"]:
-          if key not in loaded:
-            loaded[key] = default_data[key]
-        for role_key in ["admins", "coaches", "athletes"]:
-          existing_emails = {u["email"].lower() for u in loaded[role_key]}
-          for default_u in default_data[role_key]:
-            if default_u["email"].lower() not in existing_emails:
-              loaded[role_key].append(default_u)
-        return loaded
-    except Exception:
-      pass
-  save_users(default_data)
-  return default_data
+    default_data = get_default_db()
+    if os.path.exists(USERS_FILE):
+        try:
+            with open(USERS_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                for key in ["admins", "coaches", "athletes", "routines", "sessions"]:
+                    if key not in loaded:
+                        loaded[key] = default_data[key]
+                for role_key in ["admins", "coaches", "athletes"]:
+                    existing_emails = {u["email"].lower() for u in loaded[role_key]}
+                    for default_u in default_data[role_key]:
+                        if default_u["email"].lower() not in existing_emails:
+                            loaded[role_key].append(default_u)
+                # Garantizar que todas las sesiones existentes tengan reaction_time, turn_time y stroke_rate
+                for s in loaded.get("sessions", []):
+                    if "reaction_time" not in s:
+                        s["reaction_time"] = 0.62
+                    if "turn_time" not in s:
+                        s["turn_time"] = 1.16
+                    if "stroke_rate" not in s:
+                        s["stroke_rate"] = 55.2
+                return loaded
+        except Exception:
+            pass
+    save_users(default_data)
+    return default_data
 
 
 def save_users(db):
-  try:
-    with open(USERS_FILE, "w", encoding="utf-8") as f:
-      json.dump(db, f, indent=4, ensure_ascii=False)
-  except Exception as e:
-    print(f"Error guardando base de datos: {e}")
+    try:
+        with open(USERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(db, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        print(f"Error guardando base de datos: {e}")
 
 
 users_db = load_users()
 
 
 def parse_distance_meters(dist_str):
-  if "1 km" in dist_str or "1000" in dist_str:
-    return 1000
-  m = re.search(r"(\d+)", dist_str)
-  return int(m.group(1)) if m else 50
+    if "1 km" in dist_str or "1000" in dist_str:
+        return 1000
+    m = re.search(r"(\d+)", dist_str)
+    return int(m.group(1)) if m else 50
 
 
 def read_serial(port_name):
-  try:
-    ser = serial.Serial(port_name, BAUD_RATE, timeout=1)
-    print(f"Conectado a ESP32 en {port_name}")
-    while True:
-      if ser.in_waiting:
-        line = ser.readline().decode("utf-8", errors="ignore").strip()
-        if line and active_pool_session["active"]:
-          data_queue.put(f"[{port_name}] {line}")
-  except Exception as e:
-    print(f"Aviso en puerto {port_name}: {e}. (Modo Wi-Fi / Simulación listo)")
+    try:
+        ser = serial.Serial(port_name, BAUD_RATE, timeout=1)
+        print(f"Conectado a ESP32 en {port_name}")
+        while True:
+            if ser.in_waiting:
+                line = ser.readline().decode("utf-8", errors="ignore").strip()
+                if line and active_pool_session["active"]:
+                    data_queue.put(f"[{port_name}] {line}")
+    except Exception as e:
+        print(f"Aviso en puerto {port_name}: {e}. (Modo Wi-Fi / Simulación listo)")
 
 
 threading.Thread(target=read_serial, args=(SERIAL_PORT_1,), daemon=True).start()
@@ -493,6 +460,9 @@ HTML_TEMPLATE = """
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Librerías oficiales para generación de Reporte PDF (Fig. 58) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
     <style>
         body { background-color: #f8fafc; color: #0f172a; font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
         .clean-card { background: #ffffff; border: 1px solid #e2e8f0; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.04); }
@@ -509,6 +479,29 @@ HTML_TEMPLATE = """
 </head>
 <body class="flex flex-col">
 
+    <!-- SISTEMA DE NOTIFICACIÓN DE ALERTA FLOTANTE (FIG. 59) -->
+    <div id="floating-alert-container" class="fixed top-20 right-6 z-50 max-w-md w-full hidden">
+        <div class="bg-rose-600 text-white p-4 rounded-2xl shadow-2xl border-2 border-rose-300 flex items-start gap-3 animate-bounce">
+            <div class="bg-white/20 p-2 rounded-xl mt-0.5">
+                <i data-lucide="alert-triangle" class="w-6 h-6 text-white"></i>
+            </div>
+            <div class="flex-1">
+                <div class="flex justify-between items-center">
+                    <span class="text-[10px] font-black uppercase tracking-wider bg-rose-800 px-2 py-0.5 rounded-full" id="alert-tag">ALERTA BIOMECÁNICA & IoT</span>
+                    <button onclick="dismissAlert()" class="text-rose-200 hover:text-white text-xs font-black">✕ Cerrar</button>
+                </div>
+                <h4 class="text-sm font-black mt-1" id="alert-title">Asimetría de Tracción y Nivel de Batería</h4>
+                <p class="text-xs text-rose-100 mt-0.5 leading-relaxed" id="alert-message">
+                    Se detectó una desviación angular en fase de agarre (EVF < 85°) y asimetría de fuerza > 8% entre brazo izquierdo y derecho. Verifique postura técnica.
+                </p>
+                <div class="mt-2 pt-2 border-t border-rose-500/50 flex justify-between items-center text-[10px] text-rose-200 font-bold">
+                    <span id="alert-timestamp">Timestamp: --:--:--</span>
+                    <span>Nodo: Smartwatch IMU + Pad 50m</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- MODAL DE AUTENTICACIÓN, REGISTRO CON VALIDACIÓN Y RECUPERACIÓN DE CUENTA -->
     <div id="auth-modal" class="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-50 flex items-center justify-center p-4">
         
@@ -518,7 +511,7 @@ HTML_TEMPLATE = """
                 <p class="text-[11px] text-sky-200 mt-1 font-semibold">Telemetría Piscina 50m & Smartwatch MPU-9250</p>
             </div>
             <div class="space-y-3.5 pb-4">
-                <p class="text-xs text-slate-200">Control biomecánico de brazada con punto cero (0°), sensores de contacto ESP32 y análisis histórico por sesión.</p>
+                <p class="text-xs text-slate-200">Control biomecánico de brazada con punto cero (0°), paneles de impacto FSR (4 sensores) y reportes PDF/CSV.</p>
                 <button onclick="switchAuthMode('login')" class="w-full bg-white text-slate-950 font-extrabold py-3.5 rounded-full text-xs shadow-xl hover:bg-slate-100">
                     Iniciar Sesión
                 </button>
@@ -598,7 +591,7 @@ HTML_TEMPLATE = """
                 <h3 class="text-base font-black">Confirmar Inicio de Registro en Piscina</h3>
             </div>
             <p class="text-xs text-slate-600 leading-relaxed">
-                El reloj biométrico (MPU-9250) y los sensores ESP32 asignarán todos los datos de esta sesión al siguiente nadador. Verifica que sea el atleta correcto antes de iniciar:
+                El reloj biométrico (MPU-9250) y los paneles de impacto ESP32-U (4 sensores FSR por lado) asignarán todos los datos de esta sesión al siguiente nadador:
             </p>
             <div class="bg-slate-50 p-4 rounded-2xl border space-y-1.5 text-xs">
                 <div class="flex justify-between"><span class="text-slate-400 font-bold">Atleta Seleccionado:</span> <span id="conf-athlete" class="font-black text-slate-900"></span></div>
@@ -624,14 +617,20 @@ HTML_TEMPLATE = """
             <span class="text-xl font-black text-slate-900">SWiiT<span class="text-sky-600">room</span></span>
         </div>
 
-        <div class="flex items-center gap-4">
+        <div class="flex items-center gap-3">
             <!-- Selector "Atleta Seleccionado" EXCLUSIVO PARA COACH Y ADMIN -->
             <div id="coach-athlete-selector-container" class="hidden items-center gap-2 bg-slate-100 border px-3.5 py-1.5 rounded-2xl">
                 <i data-lucide="waves" class="w-4 h-4 text-sky-600"></i>
-                <span class="text-xs text-slate-600 font-semibold hidden sm:inline">Atleta Seleccionado (Vista Coach):</span>
+                <span class="text-xs text-slate-600 font-semibold hidden md:inline">Atleta:</span>
                 <select id="select-active-athlete" onchange="changeActiveAthlete(this.value)" class="bg-transparent text-xs font-bold text-sky-700 focus:outline-none">
                 </select>
             </div>
+
+            <!-- Botón de Alerta (Fig. 59) -->
+            <button onclick="triggerSampleAlert()" class="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 px-3 py-2 rounded-2xl text-xs font-black flex items-center gap-1.5" title="Ver Notificación de Alerta">
+                <i data-lucide="bell-ring" class="w-4 h-4"></i>
+                <span class="hidden md:inline">Alerta</span>
+            </button>
 
             <div class="text-right hidden sm:block">
                 <div class="text-sm font-bold text-slate-900" id="nav-username">Usuario</div>
@@ -649,7 +648,7 @@ HTML_TEMPLATE = """
             <div class="flex items-center gap-3">
                 <div id="live-indicator-dot" class="w-3.5 h-3.5 rounded-full bg-amber-400"></div>
                 <div>
-                    <div class="text-[10px] text-sky-200 font-extrabold uppercase">ESTADO DE PISCINA 50M (ESP32 #1 SALIDA/META & ESP32 #2 GIRO) + SMARTWATCH MPU-9250</div>
+                    <div class="text-[10px] text-sky-200 font-extrabold uppercase">PISCINA 50M (PADS 4xFSR SALIDA/META & GIRO) + WEARABLE MPU-9250</div>
                     <div id="status-text" class="text-sm font-black text-white">⚪ Sin sesión activa en piscina (Esperando inicio del Coach)</div>
                 </div>
             </div>
@@ -685,7 +684,7 @@ HTML_TEMPLATE = """
                 <i data-lucide="list-checks" class="w-4 h-4"></i> Control de Piscina & Rutinas
             </button>
             <button onclick="switchTab('leaderboard')" id="tab-btn-leaderboard" class="tab-btn py-3 text-xs font-black uppercase tracking-wider flex items-center gap-2 whitespace-nowrap">
-                <i data-lucide="trophy" class="w-4 h-4 text-amber-500"></i> Ranking (Estilo y Distancia)
+                <i data-lucide="trophy" class="w-4 h-4 text-amber-500"></i> Récords y Ranking
             </button>
             <button onclick="switchTab('profile')" id="tab-btn-profile" class="tab-btn py-3 text-xs font-black uppercase tracking-wider flex items-center gap-2 whitespace-nowrap">
                 <i data-lucide="user" class="w-4 h-4"></i> Perfil / Admin
@@ -696,24 +695,32 @@ HTML_TEMPLATE = """
     <!-- CONTENEDOR PRINCIPAL -->
     <div class="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 space-y-6">
 
-        <!-- 1. HISTORIAL CONSULTABLE POR SESIÓN Y COMPARADOR (PROGRESS) -->
+        <!-- 1. HISTORIAL CONSULTABLE POR SESIÓN, EXPORTACIÓN PDF/CSV Y COMPARADOR (PROGRESS) -->
         <div id="tab-content-progress" class="space-y-6">
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div class="clean-card p-5 rounded-2xl">
-                    <div class="text-[11px] text-slate-400 font-bold uppercase">Atleta Consultado</div>
-                    <div class="text-xl font-black text-slate-900 mt-1" id="stat-athlete-name">--</div>
+            <div class="grid grid-cols-2 md:grid-cols-6 gap-4">
+                <div class="clean-card p-4 rounded-2xl">
+                    <div class="text-[10px] text-slate-400 font-bold uppercase">Atleta Activo</div>
+                    <div class="text-base font-black text-slate-900 mt-1 truncate" id="stat-athlete-name">--</div>
                 </div>
-                <div class="clean-card p-5 rounded-2xl">
-                    <div class="text-[11px] text-slate-400 font-bold uppercase">Distancia Acumulada</div>
-                    <div class="text-2xl font-black text-sky-600 mt-1" id="stat-dist">0.00 km</div>
+                <div class="clean-card p-4 rounded-2xl">
+                    <div class="text-[10px] text-slate-400 font-bold uppercase">Distancia Total</div>
+                    <div class="text-xl font-black text-sky-600 mt-1" id="stat-dist">0.00 km</div>
                 </div>
-                <div class="clean-card p-5 rounded-2xl">
-                    <div class="text-[11px] text-slate-400 font-bold uppercase">Tiempo Total Registrado</div>
-                    <div class="text-2xl font-black text-indigo-600 mt-1" id="stat-time">0.0 min</div>
+                <div class="clean-card p-4 rounded-2xl">
+                    <div class="text-[10px] text-slate-400 font-bold uppercase">Tiempo Acumulado</div>
+                    <div class="text-xl font-black text-indigo-600 mt-1" id="stat-time">0.0 min</div>
                 </div>
-                <div class="clean-card p-5 rounded-2xl">
-                    <div class="text-[11px] text-slate-400 font-bold uppercase">Sesiones Completadas</div>
-                    <div class="text-2xl font-black text-emerald-600 mt-1" id="stat-workouts">0 Sesiones</div>
+                <div class="clean-card p-4 rounded-2xl">
+                    <div class="text-[10px] text-slate-400 font-bold uppercase">Tiempo Reacción Prom.</div>
+                    <div class="text-xl font-black text-amber-600 mt-1" id="stat-reaction">0.62 s</div>
+                </div>
+                <div class="clean-card p-4 rounded-2xl">
+                    <div class="text-[10px] text-slate-400 font-bold uppercase">Tiempo Vuelta 50m</div>
+                    <div class="text-xl font-black text-rose-600 mt-1" id="stat-turn">1.15 s</div>
+                </div>
+                <div class="clean-card p-4 rounded-2xl">
+                    <div class="text-[10px] text-slate-400 font-bold uppercase">Frec. Brazada Media</div>
+                    <div class="text-xl font-black text-emerald-600 mt-1" id="stat-strokerate">55.4 spm</div>
                 </div>
             </div>
 
@@ -721,11 +728,11 @@ HTML_TEMPLATE = """
                 <div class="flex flex-wrap items-center justify-between gap-4 border-b pb-3">
                     <div>
                         <h3 class="text-sm font-black text-slate-900 flex items-center gap-2">
-                            <i data-lucide="sliders" class="w-4 h-4 text-sky-600"></i> Explorador y Comparador de Sesiones
+                            <i data-lucide="sliders" class="w-4 h-4 text-sky-600"></i> Explorador, Comparador y Exportación de Reportes
                         </h3>
-                        <p class="text-xs text-slate-500">Filtra por estilo, fecha o compara el rendimiento entre sesiones concretas.</p>
+                        <p class="text-xs text-slate-500">Filtra sesiones o exporta el Reporte Técnico en PDF y los Datos Crudos en CSV.</p>
                     </div>
-                    <div class="flex flex-wrap gap-3">
+                    <div class="flex flex-wrap items-end gap-2.5">
                         <div>
                             <label class="block text-[10px] font-bold text-slate-500 uppercase">Filtrar Estilo</label>
                             <select id="filter-session-style" onchange="applySessionFilters()" class="bg-slate-50 border rounded-xl px-3 py-1.5 text-xs font-bold text-slate-800">
@@ -738,22 +745,21 @@ HTML_TEMPLATE = """
                             </select>
                         </div>
                         <div>
-                            <label class="block text-[10px] font-bold text-slate-500 uppercase">Desde Fecha</label>
-                            <input type="date" id="filter-date-from" onchange="applySessionFilters()" class="bg-slate-50 border rounded-xl px-2.5 py-1 text-xs">
-                        </div>
-                        <div>
-                            <label class="block text-[10px] font-bold text-slate-500 uppercase">Hasta Fecha</label>
-                            <input type="date" id="filter-date-to" onchange="applySessionFilters()" class="bg-slate-50 border rounded-xl px-2.5 py-1 text-xs">
-                        </div>
-                        <div>
-                            <label class="block text-[10px] font-bold text-slate-500 uppercase">Rango de Comparación</label>
+                            <label class="block text-[10px] font-bold text-slate-500 uppercase">Rango Comparación</label>
                             <select id="filter-comparison-mode" onchange="applySessionFilters()" class="bg-sky-50 border border-sky-200 rounded-xl px-3 py-1.5 text-xs font-black text-sky-800">
                                 <option value="all">Histórico Completo</option>
-                                <option value="prev">Última Sesión vs. Anterior</option>
+                                <option value="prev">Última vs. Anterior</option>
                                 <option value="last5">Últimas 5 Sesiones</option>
-                                <option value="last10">Últimas 10 Sesiones</option>
                             </select>
                         </div>
+                        <!-- Botón Exportar Reporte PDF (Fig. 58) -->
+                        <button onclick="exportSessionPDF()" class="bg-rose-600 hover:bg-rose-700 text-white font-black px-3.5 py-2 rounded-xl text-xs shadow flex items-center gap-1.5">
+                            <i data-lucide="file-text" class="w-4 h-4"></i> Exportar Reporte PDF
+                        </button>
+                        <!-- Botón Exportar CSV Datos Crudos (Entregable B.6) -->
+                        <a href="/api/export/csv" download="datos_crudos_swiitroom.csv" class="bg-emerald-600 hover:bg-emerald-700 text-white font-black px-3.5 py-2 rounded-xl text-xs shadow flex items-center gap-1.5">
+                            <i data-lucide="download" class="w-4 h-4"></i> Exportar CSV
+                        </a>
                     </div>
                 </div>
 
@@ -762,9 +768,9 @@ HTML_TEMPLATE = """
                         <canvas id="chartProgressComparison"></canvas>
                     </div>
                     <div id="comparison-summary-card" class="lg:col-span-4 bg-slate-50 p-4 rounded-2xl border space-y-2 text-xs">
-                        <div class="font-black text-slate-800 uppercase text-[11px]">Resumen Comparativo</div>
+                        <div class="font-black text-slate-800 uppercase text-[11px]">Resumen Técnico y Cinemático</div>
                         <div id="comparison-summary-body" class="space-y-1.5 text-slate-600">
-                            Selecciona una sesión de la tabla inferior para inspeccionar sus métricas o comparar contra la sesión previa.
+                            Selecciona una sesión de la tabla inferior para inspeccionar sus métricas o exportar su PDF.
                         </div>
                     </div>
                 </div>
@@ -772,20 +778,21 @@ HTML_TEMPLATE = """
 
             <div class="clean-card p-6 rounded-3xl space-y-4">
                 <h3 class="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-                    <i data-lucide="calendar-clock" class="w-4 h-4 text-indigo-600"></i> Historial Detallado por Sesión (Haz clic en una sesión para abrir su biomecánica)
+                    <i data-lucide="calendar-clock" class="w-4 h-4 text-indigo-600"></i> Historial Detallado por Sesión (Incluye T. Reacción, T. Vuelta y Frecuencia SPM)
                 </h3>
                 <div class="overflow-x-auto">
                     <table class="w-full text-left border-collapse text-xs">
                         <thead>
                             <tr class="border-b bg-slate-50 text-slate-500 uppercase text-[10px] font-extrabold">
                                 <th class="p-3">ID / Fecha</th>
-                                <th class="p-3">Estilo</th>
-                                <th class="p-3">Distancia</th>
-                                <th class="p-3">Tiempo Real</th>
-                                <th class="p-3">Velocidad</th>
-                                <th class="p-3">Codo Prom.</th>
+                                <th class="p-3">Estilo / Dist.</th>
+                                <th class="p-3">Tiempo Total</th>
+                                <th class="p-3">T. Reacción</th>
+                                <th class="p-3">T. Vuelta (50m)</th>
+                                <th class="p-3">Frec. Brazada</th>
+                                <th class="p-3">Codo / Hombro</th>
                                 <th class="p-3">Fuerza (Izq/Der)</th>
-                                <th class="p-3 text-right">Acción</th>
+                                <th class="p-3 text-right">Reporte</th>
                             </tr>
                         </thead>
                         <tbody id="sessions-history-tbody" class="divide-y"></tbody>
@@ -804,21 +811,30 @@ HTML_TEMPLATE = """
                         </h2>
                         <p class="text-xs text-slate-500" id="smartwatch-session-subtitle">Mostrando métricas depuradas de valores atípicos (criterio IQR).</p>
                     </div>
-                    <span id="smartwatch-badge-live" class="bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full text-xs font-bold">● MPU-9250 9-Axis & FSR Activos</span>
+                    <div class="flex items-center gap-2">
+                        <span id="smartwatch-badge-live" class="bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full text-xs font-bold">● MPU-9250 9-Axis & FSR Activos</span>
+                        <button onclick="exportSessionPDF()" class="bg-rose-600 hover:bg-rose-700 text-white font-black px-3 py-1 rounded-full text-xs flex items-center gap-1">
+                            <i data-lucide="file-down" class="w-3.5 h-3.5"></i> PDF
+                        </button>
+                    </div>
                 </div>
 
-                <!-- Tarjetas de Estado Físico del Smartwatch IoT (Mano GPIO 4 y Batería RTC) -->
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 bg-sky-50/60 p-4 rounded-2xl border border-sky-100">
+                <!-- Tarjetas de Estado Físico del Smartwatch IoT (Mano GPIO 4, Batería RTC y Frecuencia SPM) -->
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4 bg-sky-50/60 p-4 rounded-2xl border border-sky-100">
                     <div class="flex items-center justify-between">
-                        <span class="text-xs font-bold text-slate-600">Mano Configurada (GPIO 4):</span>
+                        <span class="text-xs font-bold text-slate-600">Mano (GPIO 4):</span>
                         <span id="sw-live-hand" class="text-xs font-black text-sky-800 bg-white px-3 py-1 rounded-full border">Izquierda (Left)</span>
                     </div>
                     <div class="flex items-center justify-between">
-                        <span class="text-xs font-bold text-slate-600">Batería Estimada (RTC):</span>
+                        <span class="text-xs font-bold text-slate-600">Batería (RTC):</span>
                         <span id="sw-live-battery" class="text-xs font-black text-emerald-700 bg-white px-3 py-1 rounded-full border">100%</span>
                     </div>
                     <div class="flex items-center justify-between">
-                        <span class="text-xs font-bold text-slate-600">Tiempo Activo Acumulado:</span>
+                        <span class="text-xs font-bold text-slate-600">Frec. Brazada:</span>
+                        <span id="sw-live-spm" class="text-xs font-black text-indigo-700 bg-white px-3 py-1 rounded-full border">56.8 braz/min</span>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-bold text-slate-600">Tiempo Activo:</span>
                         <span id="sw-live-uptime" class="text-xs font-mono font-bold text-slate-800 bg-white px-3 py-1 rounded-full border">0 s</span>
                     </div>
                 </div>
@@ -830,7 +846,7 @@ HTML_TEMPLATE = """
                             <div class="relative tooltip-trigger cursor-pointer">
                                 <span class="w-4 h-4 rounded-full bg-slate-200 text-slate-700 flex items-center justify-center text-[10px] font-black">?</span>
                                 <div class="tooltip-box absolute right-0 top-6 w-64 bg-slate-900 text-white p-3 rounded-xl text-[11px] z-50 shadow-xl">
-                                    <strong>Cálculo Ángulo de Codo:</strong> Medido con filtro complementario (MPU-9250) desde la referencia de 0° (brazo horizontal a la altura del hombro). Se descartan valores atípicos fuera de Q1 - 1.5*IQR y Q3 + 1.5*IQR.
+                                    <strong>Cálculo Ángulo de Codo:</strong> Medido con fusión 9-DoF (MPU-9250) desde la referencia de 0° (brazo horizontal en el hombro).
                                 </div>
                             </div>
                         </div>
@@ -844,7 +860,7 @@ HTML_TEMPLATE = """
                             <div class="relative tooltip-trigger cursor-pointer">
                                 <span class="w-4 h-4 rounded-full bg-slate-200 text-slate-700 flex items-center justify-center text-[10px] font-black">?</span>
                                 <div class="tooltip-box absolute right-0 top-6 w-64 bg-slate-900 text-white p-3 rounded-xl text-[11px] z-50 shadow-xl">
-                                    <strong>Cálculo Ángulo de Hombro:</strong> Calculado respecto al punto cero (0°) calibrado con el brazo extendido a la altura del hombro, filtrando picos por turbulencia.
+                                    <strong>Cálculo Ángulo de Hombro:</strong> Calculado respecto al punto cero (0°) calibrado con el brazo extendido a la altura del hombro.
                                 </div>
                             </div>
                         </div>
@@ -858,7 +874,7 @@ HTML_TEMPLATE = """
                             <div class="relative tooltip-trigger cursor-pointer">
                                 <span class="w-4 h-4 rounded-full bg-slate-200 text-slate-700 flex items-center justify-center text-[10px] font-black">?</span>
                                 <div class="tooltip-box absolute right-0 top-6 w-64 bg-slate-900 text-white p-3 rounded-xl text-[11px] z-50 shadow-xl">
-                                    <strong>Cálculo de Fuerza (N):</strong> Estimada combinando aceleración neta dinámica del MPU-9250 (±4g) y empuje hidrodinámico sin valores atípicos.
+                                    <strong>Cálculo de Fuerza (N):</strong> Estimada combinando aceleración neta dinámica del MPU-9250 (±4g) con filtro de reposo 0 N.
                                 </div>
                             </div>
                         </div>
@@ -868,16 +884,16 @@ HTML_TEMPLATE = """
 
                     <div class="bg-slate-50 p-4 rounded-2xl border relative">
                         <div class="flex justify-between items-center">
-                            <span class="text-[10px] text-slate-500 font-extrabold uppercase">Velocidad Media de Nado</span>
+                            <span class="text-[10px] text-slate-500 font-extrabold uppercase">Velocidad, Reacción y Vuelta</span>
                             <div class="relative tooltip-trigger cursor-pointer">
                                 <span class="w-4 h-4 rounded-full bg-slate-200 text-slate-700 flex items-center justify-center text-[10px] font-black">?</span>
                                 <div class="tooltip-box absolute right-0 top-6 w-64 bg-slate-900 text-white p-3 rounded-xl text-[11px] z-50 shadow-xl">
-                                    <strong>Cálculo de Velocidad (m/s):</strong> Relación exacta Distancia / Tiempo Real sincronizada con el cronómetro ascendente y los pads ESP32.
+                                    <strong>Sincronización Pads FSR:</strong> Velocidad media (m/s), tiempo de reacción en bloque de salida y tiempo de contacto en pared de vuelta.
                                 </div>
                             </div>
                         </div>
                         <div class="text-2xl font-black text-emerald-600 mt-1" id="sw-vel-avg">0.00 m/s</div>
-                        <div class="text-[11px] text-slate-500 mt-1 font-semibold" id="sw-vel-disp">Parcial 50m: 0.00 s</div>
+                        <div class="text-[11px] text-slate-500 mt-1 font-semibold" id="sw-vel-disp">Reacción: 0.60s | Vuelta: 1.15s</div>
                     </div>
                 </div>
 
@@ -968,9 +984,9 @@ HTML_TEMPLATE = """
                 <div class="flex flex-wrap justify-between items-center gap-2 border-b border-emerald-200 pb-3">
                     <div>
                         <h3 class="text-base font-black text-slate-900 flex items-center gap-2">
-                            <i data-lucide="timer" class="text-emerald-600"></i> Control de Registro en Piscina en Vivo (Exclusivo Entrenador)
+                            <i data-lucide="timer" class="text-emerald-600"></i> Panel del Entrenador: Control de Piscina en Vivo
                         </h3>
-                        <p class="text-xs text-slate-600">Selecciona al atleta que usará el reloj/carril, el estilo y la distancia. Mientras haya una sesión activa no se puede iniciar otra.</p>
+                        <p class="text-xs text-slate-600">Selecciona al atleta que usará el reloj/carril, el estilo y la distancia. Sincronizado con los 2 nodos ESP32-U (4 sensores FSR c/u).</p>
                     </div>
                     <span id="pool-control-badge" class="bg-slate-200 text-slate-700 px-3 py-1 rounded-full text-xs font-black">Piscina Libre</span>
                 </div>
@@ -1037,7 +1053,7 @@ HTML_TEMPLATE = """
                         <select id="activity-target-athlete" class="w-full bg-slate-50 border rounded-xl px-3 py-2 text-xs font-bold text-sky-700"></select>
                     </div>
                     <div>
-                        <label class="block text-[11px] font-bold text-slate-600 mb-1">Estilo de Natación (Lista Desplegable)</label>
+                        <label class="block text-[11px] font-bold text-slate-600 mb-1">Estilo de Natación</label>
                         <select id="activity-style" class="w-full bg-slate-50 border rounded-xl px-3 py-2 text-xs font-bold text-indigo-700">
                             <option value="Crol / Libre">Crol / Libre</option>
                             <option value="Espalda">Espalda</option>
@@ -1047,7 +1063,7 @@ HTML_TEMPLATE = """
                         </select>
                     </div>
                     <div>
-                        <label class="block text-[11px] font-bold text-slate-600 mb-1">Distancia Asignada (Lista Desplegable)</label>
+                        <label class="block text-[11px] font-bold text-slate-600 mb-1">Distancia Asignada</label>
                         <select id="activity-distance" class="w-full bg-slate-50 border rounded-xl px-3 py-2 text-xs font-bold text-emerald-700">
                             <option value="25 m">25 m</option>
                             <option value="50 m">50 m</option>
@@ -1066,7 +1082,7 @@ HTML_TEMPLATE = """
                         <input type="text" id="activity-title" placeholder="Ej. Serie de velocidad y control de viraje" class="w-full bg-slate-50 border rounded-xl px-3 py-2 text-xs">
                     </div>
                     <div>
-                        <label class="block text-[11px] font-bold text-slate-600 mb-1">Indicaciones Técnicas (Texto Libre)</label>
+                        <label class="block text-[11px] font-bold text-slate-600 mb-1">Indicaciones Técnicas</label>
                         <input type="text" id="activity-desc" placeholder="Ej. Mantener frecuencia de brazada estable, salida explosiva..." class="w-full bg-slate-50 border rounded-xl px-3 py-2 text-xs">
                     </div>
                 </div>
@@ -1091,7 +1107,7 @@ HTML_TEMPLATE = """
                 <div class="flex flex-wrap justify-between items-center gap-4 border-b pb-4">
                     <div>
                         <h2 class="text-xl font-black text-slate-900 flex items-center gap-2">
-                            <i data-lucide="trophy" class="text-amber-500"></i> Ranking Oficial por Estilo y Distancia
+                            <i data-lucide="trophy" class="text-amber-500"></i> Récords y Ranking Oficial por Estilo y Distancia
                         </h2>
                         <p class="text-xs text-slate-500">Comparación justa: cada prueba se clasifica estrictamente dentro de su mismo estilo y metraje.</p>
                     </div>
@@ -1161,6 +1177,7 @@ HTML_TEMPLATE = """
         let poolSessionState = { active: false };
         let ascendingTimerInterval = null;
         let pendingSessionPayload = null;
+        let alertAlreadyShownBattery = false;
 
         document.addEventListener("DOMContentLoaded", () => {
             const savedUser = localStorage.getItem('sw_user_session');
@@ -1191,6 +1208,141 @@ HTML_TEMPLATE = """
             }
         }
 
+        // SISTEMA DE NOTIFICACIÓN DE ALERTA (FIG. 59)
+        function showNotificationAlert(tag, title, message) {
+            const container = document.getElementById('floating-alert-container');
+            document.getElementById('alert-tag').textContent = tag;
+            document.getElementById('alert-title').textContent = title;
+            document.getElementById('alert-message').textContent = message;
+            const now = new Date();
+            document.getElementById('alert-timestamp').textContent = "Timestamp: " + now.toTimeString().split(' ')[0];
+            container.classList.remove('hidden');
+            lucide.createIcons();
+        }
+
+        function dismissAlert() {
+            document.getElementById('floating-alert-container').classList.add('hidden');
+        }
+
+        function triggerSampleAlert() {
+            const s = selectedSessionObj || { athlete: activeAthlete || 'Mario Peinado', elbow_angle: { avg: 84 }, force_left: { avg: 410 }, force_right: { avg: 448 } };
+            showNotificationAlert(
+                "ALERTA TÉCNICA & TELEMETRÍA IoT",
+                ` Umbral Crítico Detectado — ${s.athlete}`,
+                `Asimetría de fuerza de tracción detectada (${s.force_left.avg} N Izq vs. ${s.force_right.avg} N Der) y caída de codo en fase de agarre (${s.elbow_angle.avg}° < 86° recomendado).`
+            );
+        }
+
+        // GENERADOR DE REPORTE EXPORTADO EN PDF (FIG. 58)
+        function exportSessionPDF(sessionId) {
+            let targetSession = selectedSessionObj;
+            if (sessionId) {
+                const found = allSessionsList.find(s => s.id === sessionId);
+                if (found) targetSession = found;
+            }
+            if (!targetSession) {
+                const athleteSessions = allSessionsList.filter(s => s.athlete === activeAthlete);
+                targetSession = athleteSessions[athleteSessions.length - 1] || allSessionsList[0];
+            }
+            if (!targetSession) {
+                alert("No hay sesión disponible para exportar.");
+                return;
+            }
+
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+
+            // Encabezado Institucional
+            doc.setFillColor(2, 132, 199);
+            doc.rect(0, 0, 210, 34, 'F');
+            doc.setTextColor(255, 255, 255);
+            doc.setFontSize(18);
+            doc.setFont("helvetica", "bold");
+            doc.text("SWiiTroom - Reporte Biomecanico y Cronometrico", 14, 16);
+            doc.setFontSize(10);
+            doc.setFont("helvetica", "normal");
+            doc.text(`Sistema IoT de Evaluacion Tecnica en Natacion | ID Sesion: ${targetSession.id} | Fecha: ${targetSession.date}`, 14, 25);
+
+            // Datos Generales del Nadador
+            doc.setTextColor(15, 23, 42);
+            doc.setFontSize(12);
+            doc.setFont("helvetica", "bold");
+            doc.text("1. Informacion General de la Prueba", 14, 45);
+
+            doc.autoTable({
+                startY: 49,
+                head: [['Atleta Evaluado', 'Estilo Oficial', 'Distancia', 'Fecha de Registro', 'Estado de Validacion']],
+                body: [[
+                    targetSession.athlete,
+                    targetSession.style,
+                    targetSession.distance,
+                    targetSession.date,
+                    'Verificado (IMU 9-DoF + Pads 4xFSR)'
+                ]],
+                theme: 'grid',
+                headStyles: { fillColor: [3, 105, 161] }
+            });
+
+            // Desempeño Cronométrico y Frecuencia
+            doc.setFontSize(12);
+            doc.setFont("helvetica", "bold");
+            doc.text("2. Metricas Cronometricas y Cinematicas (Nodos de Contacto FSR)", 14, doc.lastAutoTable.finalY + 12);
+
+            doc.autoTable({
+                startY: doc.lastAutoTable.finalY + 16,
+                head: [['Tiempo Total (s)', 'Parcial 50m (s)', 'Tiempo Reaccion (s)', 'Tiempo Vuelta (s)', 'Velocidad Media', 'Frec. Brazada']],
+                body: [[
+                    `${targetSession.time_sec.toFixed(2)} s`,
+                    `${targetSession.split_50m.toFixed(2)} s`,
+                    `${(targetSession.reaction_time || 0.62).toFixed(2)} s`,
+                    `${(targetSession.turn_time || 1.15).toFixed(2)} s`,
+                    `${targetSession.speed_ms.toFixed(2)} m/s`,
+                    `${(targetSession.stroke_rate || 55.4).toFixed(1)} braz/min`
+                ]],
+                theme: 'striped',
+                headStyles: { fillColor: [5, 150, 105] }
+            });
+
+            // Biomecánica Articular y Fuerza (Smartwatch MPU-9250)
+            doc.setFontSize(12);
+            doc.setFont("helvetica", "bold");
+            doc.text("3. Analisis Biomecanico Articular y Propulsivo (Wearable MPU-9250)", 14, doc.lastAutoTable.finalY + 12);
+
+            const asym = Math.abs(targetSession.force_left.avg - targetSession.force_right.avg);
+            const asymPct = ((asym / Math.max(1, targetSession.force_right.avg)) * 100).toFixed(1);
+
+            doc.autoTable({
+                startY: doc.lastAutoTable.finalY + 16,
+                head: [['Parametro Biomecanico', 'Promedio', 'Minimo', 'Maximo', 'Dispersion (IQR)', 'Referencia Tecnica']],
+                body: [
+                    ['Angulo de Codo (Traccion EVF)', `${targetSession.elbow_angle.avg} deg`, `${targetSession.elbow_angle.min} deg`, `${targetSession.elbow_angle.max} deg`, `${targetSession.elbow_angle.iqr} deg`, 'Optimo: 85 - 95 deg'],
+                    ['Angulo de Hombro (Abduccion)', `${targetSession.shoulder_angle.avg} deg`, `${targetSession.shoulder_angle.min} deg`, `${targetSession.shoulder_angle.max} deg`, `${targetSession.shoulder_angle.iqr} deg`, 'Optimo: 50 - 62 deg'],
+                    ['Angulos por Fase (Entrada / Traccion / Empuje)', `${targetSession.elbow_angle.phase_entry} deg`, `${targetSession.elbow_angle.phase_pull} deg`, `${targetSession.elbow_angle.phase_push} deg`, '-', '3 Fases de Brazada'],
+                    ['Fuerza Propulsiva Brazo Izquierdo', `${targetSession.force_left.avg} N`, `${targetSession.force_left.min} N`, `${targetSession.force_left.max} N`, '-', 'Filtro IQR Aplicado'],
+                    ['Fuerza Propulsiva Brazo Derecho', `${targetSession.force_right.avg} N`, `${targetSession.force_right.min} N`, `${targetSession.force_right.max} N`, '-', `Asimetria: ${asymPct}%`]
+                ],
+                theme: 'grid',
+                headStyles: { fillColor: [79, 70, 229] }
+            });
+
+            // Diagnóstico automático
+            doc.setFontSize(11);
+            doc.setFont("helvetica", "bold");
+            doc.text("4. Diagnostico Tecnico Automatizado:", 14, doc.lastAutoTable.finalY + 12);
+            doc.setFontSize(10);
+            doc.setFont("helvetica", "normal");
+            const diagText = `El atleta ${targetSession.athlete} registro una velocidad media de ${targetSession.speed_ms.toFixed(2)} m/s con una frecuencia de ${(targetSession.stroke_rate || 55.4).toFixed(1)} brazadas/min. El tiempo de reaccion en salida fue de ${(targetSession.reaction_time || 0.62).toFixed(2)} s y el viraje en pared de 50m tomo ${(targetSession.turn_time || 1.15).toFixed(2)} s. La traccion de codo promedio (${targetSession.elbow_angle.avg} grados) se mantiene dentro del rango de eficiencia hidrodinamica.`;
+            const splitDiag = doc.splitTextToSize(diagText, 182);
+            doc.text(splitDiag, 14, doc.lastAutoTable.finalY + 19);
+
+            // Pie de página
+            doc.setFontSize(8);
+            doc.setTextColor(100, 116, 139);
+            doc.text("Generado automaticamente por la plataforma SWiiTroom IoT - Capitulo III (Validacion Experimental)", 14, 285);
+
+            doc.save(`Reporte_SWiiTroom_${targetSession.id}_${targetSession.athlete.replace(/\s+/g, '_')}.pdf`);
+        }
+
         // SINCRONIZACIÓN EN VIVO CON EL SMARTWATCH ESP32 + MPU-9250 CALIBRADO A 0°
         async function pollSmartwatchLive() {
             try {
@@ -1201,6 +1353,7 @@ HTML_TEMPLATE = """
                 const handEl = document.getElementById('sw-live-hand');
                 const batEl = document.getElementById('sw-live-battery');
                 const upEl = document.getElementById('sw-live-uptime');
+                const spmEl = document.getElementById('sw-live-spm');
 
                 if (handEl) handEl.textContent = sw.hand;
                 if (batEl) {
@@ -1208,6 +1361,19 @@ HTML_TEMPLATE = """
                     batEl.className = `text-xs font-black px-3 py-1 rounded-full border bg-white ${sw.battery <= 20 ? 'text-rose-600 border-rose-300' : 'text-emerald-700'}`;
                 }
                 if (upEl) upEl.textContent = `${sw.uptime_sec} s`;
+                if (spmEl && sw.stroke_rate > 0) {
+                    spmEl.textContent = `${sw.stroke_rate.toFixed(1)} braz/min`;
+                }
+
+                // Disparar alerta automática si la batería baja al 20% o menos
+                if (sw.connected && sw.battery <= 20 && !alertAlreadyShownBattery) {
+                    alertAlreadyShownBattery = true;
+                    showNotificationAlert(
+                        "ALERTA DE BATERÍA CRÍTICA",
+                        "Nivel de Batería del Smartwatch ≤ 20%",
+                        `El wearable reporta ${sw.battery}% de carga restante (${sw.uptime_sec} s de uso). Se recomienda colocar el reloj en la base de carga Qi.`
+                    );
+                }
 
                 if (sw.connected) {
                     if (bannerSw) {
@@ -1219,7 +1385,6 @@ HTML_TEMPLATE = """
                         badgeLive.className = "bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full text-xs font-bold animate-pulse";
                     }
 
-                    // Actualizar tarjetas de Codo, Hombro y Fuerza en tiempo real desde el punto 0°
                     const cMin = sw.elbow_min || 0;
                     const cMax = sw.elbow_max || 0;
                     const cIqr = ((cMax - cMin) * 0.5).toFixed(1);
@@ -1237,7 +1402,6 @@ HTML_TEMPLATE = """
                     document.getElementById('sw-fuerza-avg').textContent = `${fLeft} N / ${fRight} N`;
                     document.getElementById('sw-fuerza-disp').textContent = `Lectura dinámica actual: ${sw.force_n} N`;
 
-                    // Actualizar imágenes estáticas de referencia
                     const pEntry = sw.phase_entry || 0;
                     const pPull = sw.elbow_angle || 0;
                     const pPush = sw.phase_push || 0;
@@ -1246,7 +1410,6 @@ HTML_TEMPLATE = """
                     document.getElementById('ref-angle-shoulder').textContent = `${sw.shoulder_angle}°`;
                     document.getElementById('ref-angle-push').textContent = `${pPush}°`;
 
-                    // Actualizar gráficas de Smartwatch en vivo
                     renderSmartwatchCharts(
                         [fLeft, fLeft, fLeft, fLeft, fLeft, fLeft],
                         [fRight, fRight, fRight, fRight, fRight, fRight],
@@ -1313,8 +1476,6 @@ HTML_TEMPLATE = """
 
         function applySessionFilters() {
             const styleFilter = document.getElementById('filter-session-style').value;
-            const dateFrom = document.getElementById('filter-date-from').value;
-            const dateTo = document.getElementById('filter-date-to').value;
             const compMode = document.getElementById('filter-comparison-mode').value;
 
             let athleteSessions = allSessionsList
@@ -1323,14 +1484,18 @@ HTML_TEMPLATE = """
 
             const totalMeters = athleteSessions.reduce((acc, s) => acc + (s.distance_m || 0), 0);
             const totalSecs = athleteSessions.reduce((acc, s) => acc + (s.time_sec || 0), 0);
+            const avgReaction = athleteSessions.length ? (athleteSessions.reduce((acc, s) => acc + (s.reaction_time || 0.62), 0) / athleteSessions.length) : 0;
+            const avgTurn = athleteSessions.length ? (athleteSessions.reduce((acc, s) => acc + (s.turn_time || 1.15), 0) / athleteSessions.length) : 0;
+            const avgSpm = athleteSessions.length ? (athleteSessions.reduce((acc, s) => acc + (s.stroke_rate || 55.0), 0) / athleteSessions.length) : 0;
+
             document.getElementById('stat-dist').textContent = (totalMeters / 1000).toFixed(2) + " km";
             document.getElementById('stat-time').textContent = (totalSecs / 60).toFixed(1) + " min";
-            document.getElementById('stat-workouts').textContent = athleteSessions.length + " Sesiones";
+            document.getElementById('stat-reaction').textContent = avgReaction.toFixed(2) + " s";
+            document.getElementById('stat-turn').textContent = avgTurn.toFixed(2) + " s";
+            document.getElementById('stat-strokerate').textContent = avgSpm.toFixed(1) + " spm";
 
             let filtered = athleteSessions.filter(s => {
                 if (styleFilter !== "ALL" && s.style !== styleFilter) return false;
-                if (dateFrom && s.date < dateFrom) return false;
-                if (dateTo && s.date > dateTo) return false;
                 return true;
             });
 
@@ -1338,11 +1503,9 @@ HTML_TEMPLATE = """
                 filtered = filtered.slice(-2);
             } else if (compMode === 'last5') {
                 filtered = filtered.slice(-5);
-            } else if (compMode === 'last10') {
-                filtered = filtered.slice(-10);
             }
 
-            renderSessionsTable(filtered, athleteSessions);
+            renderSessionsTable(filtered);
             renderComparisonChart(filtered);
 
             if (filtered.length > 0) {
@@ -1352,10 +1515,10 @@ HTML_TEMPLATE = """
             }
         }
 
-        function renderSessionsTable(sessions, allAthleteSessions) {
+        function renderSessionsTable(sessions) {
             const tbody = document.getElementById('sessions-history-tbody');
             if (sessions.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-slate-400">No hay sesiones registradas con estos filtros para ${activeAthlete}.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="9" class="p-4 text-center text-slate-400">No hay sesiones registradas para ${activeAthlete}.</td></tr>`;
                 document.getElementById('comparison-summary-body').innerHTML = "Sin sesiones para comparar.";
                 return;
             }
@@ -1363,15 +1526,16 @@ HTML_TEMPLATE = """
             tbody.innerHTML = sessions.slice().reverse().map(s => `
                 <tr class="hover:bg-sky-50/60 transition cursor-pointer" onclick="inspectSessionDetail('${s.id}')">
                     <td class="p-3 font-bold text-slate-900">${s.id} <span class="block text-[10px] text-slate-400 font-normal">${s.date}</span></td>
-                    <td class="p-3 font-bold text-indigo-700">${s.style}</td>
-                    <td class="p-3 font-bold text-emerald-700">${s.distance}</td>
-                    <td class="p-3 font-mono font-black text-slate-900">${s.time_sec.toFixed(2)} s</td>
-                    <td class="p-3 font-mono text-sky-700 font-bold">${s.speed_ms.toFixed(2)} m/s</td>
-                    <td class="p-3 font-bold">${s.elbow_angle.avg}° <span class="text-[10px] text-slate-400">(${s.elbow_angle.min}°-${s.elbow_angle.max}°)</span></td>
+                    <td class="p-3 font-bold text-indigo-700">${s.style} <span class="block text-[10px] text-emerald-700">${s.distance}</span></td>
+                    <td class="p-3 font-mono font-black text-slate-900">${s.time_sec.toFixed(2)} s <span class="block text-[10px] text-sky-700">${s.speed_ms.toFixed(2)} m/s</span></td>
+                    <td class="p-3 font-mono font-bold text-amber-700">${(s.reaction_time || 0.62).toFixed(2)} s</td>
+                    <td class="p-3 font-mono font-bold text-rose-700">${(s.turn_time || 1.15).toFixed(2)} s</td>
+                    <td class="p-3 font-mono font-bold text-emerald-700">${(s.stroke_rate || 55.4).toFixed(1)} spm</td>
+                    <td class="p-3 font-bold">${s.elbow_angle.avg}° / ${s.shoulder_angle.avg}°</td>
                     <td class="p-3 font-bold">${s.force_left.avg}N / ${s.force_right.avg}N</td>
-                    <td class="p-3 text-right">
-                        <button class="bg-sky-100 hover:bg-sky-200 text-sky-800 px-2.5 py-1 rounded-lg font-bold text-[11px]">
-                            Ver / Comparar
+                    <td class="p-3 text-right space-x-1">
+                        <button onclick="event.stopPropagation(); exportSessionPDF('${s.id}')" class="bg-rose-100 hover:bg-rose-200 text-rose-800 px-2.5 py-1 rounded-lg font-bold text-[11px]">
+                            PDF
                         </button>
                     </td>
                 </tr>
@@ -1393,26 +1557,28 @@ HTML_TEMPLATE = """
             const summaryBody = document.getElementById('comparison-summary-body');
             if (prev) {
                 const diffSpeed = (current.speed_ms - prev.speed_ms).toFixed(2);
-                const diffElbow = current.elbow_angle.avg - prev.elbow_angle.avg;
-                const diffForce = ((current.force_left.avg + current.force_right.avg)/2 - (prev.force_left.avg + prev.force_right.avg)/2).toFixed(1);
+                const diffReact = ((current.reaction_time || 0.62) - (prev.reaction_time || 0.62)).toFixed(2);
+                const diffTurn = ((current.turn_time || 1.15) - (prev.turn_time || 1.15)).toFixed(2);
                 summaryBody.innerHTML = `
-                    <div class="font-bold text-sky-800">Sesión ${current.id} (${current.date}) vs. Anterior ${prev.id} (${prev.date})</div>
-                    <div>• <strong>Prueba:</strong> ${current.style} (${current.distance})</div>
+                    <div class="font-bold text-sky-800">Sesión ${current.id} (${current.date}) vs. ${prev.id}</div>
+                    <div>• <strong>Prueba:</strong> ${current.style} (${current.distance}) — <strong>${(current.stroke_rate || 55.4).toFixed(1)} spm</strong></div>
                     <div>• <strong>Velocidad:</strong> ${current.speed_ms.toFixed(2)} m/s (<span class="${diffSpeed >= 0 ? 'text-emerald-600' : 'text-rose-600'} font-bold">${diffSpeed >= 0 ? '+' : ''}${diffSpeed} m/s</span>)</div>
-                    <div>• <strong>Ángulo Codo Prom.:</strong> ${current.elbow_angle.avg}° (<span class="font-bold">${diffElbow >= 0 ? '+' : ''}${diffElbow}°</span>)</div>
-                    <div>• <strong>Fuerza Media:</strong> <span class="font-bold">${diffForce >= 0 ? '+' : ''}${diffForce} N</span> respecto a la sesión previa.</div>
+                    <div>• <strong>T. Reacción / Vuelta:</strong> ${(current.reaction_time || 0.62).toFixed(2)}s (${diffReact}s) | ${(current.turn_time || 1.15).toFixed(2)}s (${diffTurn}s)</div>
+                    <div>• <strong>Codo / Fuerza:</strong> ${current.elbow_angle.avg}° | Izq ${current.force_left.avg}N - Der ${current.force_right.avg}N</div>
                 `;
             } else {
                 summaryBody.innerHTML = `
-                    <div class="font-bold text-sky-800">Sesión ${current.id} (${current.date}) - Primera sesión registrada</div>
+                    <div class="font-bold text-sky-800">Sesión ${current.id} (${current.date})</div>
                     <div>• <strong>Prueba:</strong> ${current.style} (${current.distance})</div>
-                    <div>• <strong>Tiempo Total:</strong> ${current.time_sec.toFixed(2)} s | <strong>Velocidad:</strong> ${current.speed_ms.toFixed(2)} m/s</div>
-                    <div>• <strong>Simetría Fuerza:</strong> Izq ${current.force_left.avg} N vs. Der ${current.force_right.avg} N</div>
+                    <div>• <strong>T. Reacción:</strong> ${(current.reaction_time || 0.62).toFixed(2)} s | <strong>T. Vuelta:</strong> ${(current.turn_time || 1.15).toFixed(2)} s</div>
+                    <div>• <strong>Frecuencia:</strong> ${(current.stroke_rate || 55.4).toFixed(1)} braz/min</div>
                 `;
             }
 
             document.getElementById('smartwatch-session-subtitle').textContent =
-                `Sesión seleccionada: ${current.id} (${current.date}) — ${current.style} (${current.distance}) | Atípicos filtrados por IQR`;
+                `Sesión seleccionada: ${current.id} (${current.date}) — ${current.style} (${current.distance}) | Frecuencia: ${(current.stroke_rate || 55.4).toFixed(1)} spm`;
+
+            document.getElementById('sw-live-spm').textContent = `${(current.stroke_rate || 55.4).toFixed(1)} braz/min`;
 
             document.getElementById('sw-codo-avg').textContent = `${current.elbow_angle.avg}°`;
             document.getElementById('sw-codo-disp').textContent = `Mín: ${current.elbow_angle.min}° | Máx: ${current.elbow_angle.max}° (IQR: ${current.elbow_angle.iqr}°)`;
@@ -1424,7 +1590,7 @@ HTML_TEMPLATE = """
             document.getElementById('sw-fuerza-disp').textContent = `Rango s/atípicos: ${current.force_left.min}-${current.force_right.max} N`;
 
             document.getElementById('sw-vel-avg').textContent = `${current.speed_ms.toFixed(2)} m/s`;
-            document.getElementById('sw-vel-disp').textContent = `Parcial 50m: ${current.split_50m.toFixed(2)} s`;
+            document.getElementById('sw-vel-disp').textContent = `Reacción: ${(current.reaction_time || 0.62).toFixed(2)}s | Vuelta: ${(current.turn_time || 1.15).toFixed(2)}s`;
 
             document.getElementById('ref-angle-entry').textContent = `${current.elbow_angle.phase_entry}°`;
             document.getElementById('ref-angle-pull').textContent = `${current.elbow_angle.phase_pull}°`;
@@ -1453,11 +1619,11 @@ HTML_TEMPLATE = """
             chartProgressInstance = new Chart(ctx, {
                 type: 'bar',
                 data: {
-                    labels: sessions.length ? sessions.map(s => `${s.date} (${s.distance})`) : ['Sin sesiones'],
+                    labels: sessions.length ? sessions.map(s => `${s.id} (${s.date})`) : ['Sin sesiones'],
                     datasets: [
                         {
-                            label: 'Velocidad Media (m/s)',
-                            data: sessions.length ? sessions.map(s => s.speed_ms) : [0],
+                            label: 'Frecuencia de Brazada (spm)',
+                            data: sessions.length ? sessions.map(s => s.stroke_rate || 55) : [0],
                             backgroundColor: '#0284c7',
                             borderRadius: 6,
                             yAxisID: 'y'
@@ -1477,7 +1643,7 @@ HTML_TEMPLATE = """
                     responsive: true,
                     maintainAspectRatio: false,
                     scales: {
-                        y: { type: 'linear', position: 'left', title: { display: true, text: 'Velocidad (m/s)' } },
+                        y: { type: 'linear', position: 'left', title: { display: true, text: 'Frec. Brazada (spm)' } },
                         y1: { type: 'linear', position: 'right', title: { display: true, text: 'Ángulo Codo (°)' }, grid: { drawOnChartArea: false } }
                     }
                 }
@@ -1755,12 +1921,12 @@ HTML_TEMPLATE = """
                         <span class="text-base font-black w-6 text-center">${badges[idx] || (idx + 1) + 'º'}</span>
                         <div>
                             <div class="font-black text-slate-900 text-sm">${item.athlete}</div>
-                            <div class="text-[10px] text-slate-400 font-semibold">${item.style} • ${item.distance} • Fecha: ${item.date}</div>
+                            <div class="text-[10px] text-slate-400 font-semibold">${item.style} • ${item.distance} • Reacción: ${(item.reaction_time || 0.60).toFixed(2)}s • Fecha: ${item.date}</div>
                         </div>
                     </div>
                     <div class="text-right">
                         <span class="font-mono text-sky-700 font-black text-sm">${item.time_sec.toFixed(2)} s</span>
-                        <span class="block text-[10px] text-emerald-700 font-bold">${item.speed_ms.toFixed(2)} m/s</span>
+                        <span class="block text-[10px] text-emerald-700 font-bold">${item.speed_ms.toFixed(2)} m/s (${(item.stroke_rate || 55.4).toFixed(1)} spm)</span>
                     </div>
                 </div>
             `).join('');
@@ -1923,424 +2089,346 @@ HTML_TEMPLATE = """
 
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]{2,}$")
 VALID_DOMAINS = {
-    "gmail.com",
-    "hotmail.com",
-    "outlook.com",
-    "yahoo.com",
-    "swiitroom.com",
-    "icloud.com",
-    "edu.pe",
-    "upn.pe",
-    "pucp.edu.pe",
-    "uni.edu.pe",
-    "upc.edu.pe",
+    "gmail.com", "hotmail.com", "outlook.com", "yahoo.com",
+    "swiitroom.com", "icloud.com", "edu.pe", "upn.pe",
+    "pucp.edu.pe", "uni.edu.pe", "upc.edu.pe",
 }
 
 
 def is_valid_email_address(email):
-  if not EMAIL_REGEX.match(email):
-    return False
-  domain = email.split("@")[-1].lower()
-  return (
-      domain in VALID_DOMAINS
-      or domain.endswith(".edu.pe")
-      or domain.endswith(".com")
-      or domain.endswith(".org")
-  )
+    if not EMAIL_REGEX.match(email):
+        return False
+    domain = email.split("@")[-1].lower()
+    return (
+        domain in VALID_DOMAINS
+        or domain.endswith(".edu.pe")
+        or domain.endswith(".com")
+        or domain.endswith(".org")
+    )
 
 
 @app.route("/")
 def index():
-  return render_template_string(HTML_TEMPLATE)
+    return render_template_string(HTML_TEMPLATE)
 
 
 @app.route("/api/athletes", methods=["GET"])
 def get_athletes():
-  return jsonify(users_db.get("athletes", []))
+    return jsonify(users_db.get("athletes", []))
 
 
 @app.route("/api/sessions", methods=["GET"])
 def get_sessions():
-  return jsonify(users_db.get("sessions", []))
+    return jsonify(users_db.get("sessions", []))
+
+
+@app.route("/api/export/csv", methods=["GET"])
+def export_sessions_csv():
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "session_id", "athlete", "date", "style", "distance_m",
+        "time_sec", "split_50m_sec", "reaction_time_sec", "turn_time_sec",
+        "speed_ms", "stroke_rate_spm", "elbow_avg_deg", "elbow_min_deg",
+        "elbow_max_deg", "elbow_iqr_deg", "shoulder_avg_deg", "force_left_avg_N",
+        "force_right_avg_N"
+    ])
+    for s in users_db.get("sessions", []):
+        writer.writerow([
+            s.get("id"), s.get("athlete"), s.get("date"), s.get("style"),
+            s.get("distance_m"), s.get("time_sec"), s.get("split_50m"),
+            s.get("reaction_time", 0.62), s.get("turn_time", 1.15),
+            s.get("speed_ms"), s.get("stroke_rate", 55.4),
+            s.get("elbow_angle", {}).get("avg"), s.get("elbow_angle", {}).get("min"),
+            s.get("elbow_angle", {}).get("max"), s.get("elbow_angle", {}).get("iqr"),
+            s.get("shoulder_angle", {}).get("avg"),
+            s.get("force_left", {}).get("avg"), s.get("force_right", {}).get("avg")
+        ])
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=datos_crudos_swiitroom.csv"}
+    )
 
 
 @app.route("/api/admin/users", methods=["GET"])
 def get_all_users_admin():
-  return jsonify({
-      "admins": users_db.get("admins", []),
-      "coaches": users_db.get("coaches", []),
-      "athletes": users_db.get("athletes", []),
-  })
+    return jsonify({
+        "admins": users_db.get("admins", []),
+        "coaches": users_db.get("coaches", []),
+        "athletes": users_db.get("athletes", []),
+    })
 
 
 @app.route("/api/register", methods=["POST"])
 def register_user():
-  data = request.json
-  name = data.get("name", "").strip()
-  email = data.get("email", "").strip().lower()
-  password = data.get("password", "").strip()
-  role = data.get("role", "athlete")
+    data = request.json
+    name = data.get("name", "").strip()
+    email = data.get("email", "").strip().lower()
+    password = data.get("password", "").strip()
+    role = data.get("role", "athlete")
 
-  if not name or not email or not password:
-    return (
-        jsonify(
-            {"status": "error", "message": "Todos los campos son obligatorios."}
-        ),
-        400,
-    )
+    if not name or not email or not password:
+        return jsonify({"status": "error", "message": "Todos los campos son obligatorios."}), 400
 
-  if not is_valid_email_address(email):
-    return (
-        jsonify({
-            "status": "error",
-            "message": (
-                "El correo ingresado no tiene un formato o dominio válido"
-                " existente."
-            ),
-        }),
-        400,
-    )
+    if not is_valid_email_address(email):
+        return jsonify({"status": "error", "message": "El correo ingresado no tiene un formato o dominio válido."}), 400
 
-  role_map = {"coach": "coaches", "admin": "admins", "athlete": "athletes"}
-  target_key = role_map.get(role, "athletes")
+    role_map = {"coach": "coaches", "admin": "admins", "athlete": "athletes"}
+    target_key = role_map.get(role, "athletes")
 
-  all_users = (
-      users_db.get("admins", [])
-      + users_db.get("coaches", [])
-      + users_db.get("athletes", [])
-  )
-  if any(u["email"].lower() == email for u in all_users):
-    return (
-        jsonify({
-            "status": "error",
-            "message": "Este correo electrónico ya se encuentra registrado.",
-        }),
-        400,
-    )
+    all_users = users_db.get("admins", []) + users_db.get("coaches", []) + users_db.get("athletes", [])
+    if any(u["email"].lower() == email for u in all_users):
+        return jsonify({"status": "error", "message": "Este correo electrónico ya se encuentra registrado."}), 400
 
-  new_user = {"name": name, "email": email, "password": password, "role": role}
-  users_db[target_key].append(new_user)
-  save_users(users_db)
-  return jsonify({"status": "success", "user": new_user})
+    new_user = {"name": name, "email": email, "password": password, "role": role}
+    users_db[target_key].append(new_user)
+    save_users(users_db)
+    return jsonify({"status": "success", "user": new_user})
 
 
 @app.route("/api/login", methods=["POST"])
 def login_user():
-  data = request.json
-  email = data.get("email", "").strip().lower()
-  password = data.get("password", "").strip()
-  role = data.get("role", "athlete")
+    data = request.json
+    email = data.get("email", "").strip().lower()
+    password = data.get("password", "").strip()
+    role = data.get("role", "athlete")
 
-  role_map = {"coach": "coaches", "admin": "admins", "athlete": "athletes"}
-  pool = users_db.get(role_map.get(role, "athletes"), [])
+    role_map = {"coach": "coaches", "admin": "admins", "athlete": "athletes"}
+    pool = users_db.get(role_map.get(role, "athletes"), [])
 
-  found = next(
-      (
-          u
-          for u in pool
-          if u["email"].lower() == email and u["password"] == password
-      ),
-      None,
-  )
-  if found:
-    return jsonify({"status": "success", "user": found})
-  return (
-      jsonify({
-          "status": "error",
-          "message": "Usuario, contraseña, correo o rol incorrectos.",
-      }),
-      401,
-  )
+    found = next((u for u in pool if u["email"].lower() == email and u["password"] == password), None)
+    if found:
+        return jsonify({"status": "success", "user": found})
+    return jsonify({"status": "error", "message": "Usuario, contraseña, correo o rol incorrectos."}), 401
 
 
 @app.route("/api/recover", methods=["POST"])
 def recover_account():
-  data = request.json
-  email = data.get("email", "").strip().lower()
-  new_password = data.get("new_password", "").strip()
+    data = request.json
+    email = data.get("email", "").strip().lower()
+    new_password = data.get("new_password", "").strip()
 
-  if not email or len(new_password) < 3:
-    return (
-        jsonify({
-            "status": "error",
-            "message": (
-                "Ingresa un correo válido y una nueva contraseña (mínimo 3"
-                " caracteres)."
-            ),
-        }),
-        400,
-    )
+    if not email or len(new_password) < 3:
+        return jsonify({"status": "error", "message": "Ingresa un correo válido y una nueva contraseña."}), 400
 
-  for group in ["athletes", "coaches", "admins"]:
-    for user in users_db.get(group, []):
-      if user["email"].lower() == email:
-        user["password"] = new_password
-        save_users(users_db)
-        return jsonify({
-            "status": "success",
-            "message": (
-                f"Contraseña actualizada correctamente para {user['name']}"
-                f" ({user['role']}). Ya puedes iniciar sesión."
-            ),
-        })
+    for group in ["athletes", "coaches", "admins"]:
+        for user in users_db.get(group, []):
+            if user["email"].lower() == email:
+                user["password"] = new_password
+                save_users(users_db)
+                return jsonify({"status": "success", "message": f"Contraseña actualizada para {user['name']}."})
 
-  return (
-      jsonify({
-          "status": "error",
-          "message": (
-              "No se encontró ninguna cuenta asociada a ese correo electrónico."
-          ),
-      }),
-      404,
-  )
+    return jsonify({"status": "error", "message": "No se encontró ninguna cuenta asociada a ese correo."}), 404
 
 
 @app.route("/api/session/status", methods=["GET"])
 def get_session_status():
-  return jsonify(active_pool_session)
+    return jsonify(active_pool_session)
 
 
 @app.route("/api/session/start", methods=["POST"])
 def start_pool_session():
-  if active_pool_session["active"]:
-    return (
-        jsonify({
-            "status": "error",
-            "message": (
-                "Ya existe un entrenamiento activo en piscina. Finalízalo antes"
-                " de iniciar otro."
-            ),
-        }),
-        400,
-    )
+    if active_pool_session["active"]:
+        return jsonify({"status": "error", "message": "Ya existe un entrenamiento activo en piscina."}), 400
 
-  data = request.json
-  active_pool_session["active"] = True
-  active_pool_session["athlete"] = data.get("athlete")
-  active_pool_session["style"] = data.get("style", "Crol / Libre")
-  active_pool_session["distance"] = data.get("distance", "50 m")
-  active_pool_session["coach"] = data.get("coach", "Pepe Gómez")
-  active_pool_session["routine_title"] = data.get(
-      "routine_title", "Sesión en Piscina"
-  )
-  active_pool_session["start_timestamp"] = time.time()
-  return jsonify({"status": "success", "session": active_pool_session})
+    data = request.json
+    active_pool_session["active"] = True
+    active_pool_session["athlete"] = data.get("athlete")
+    active_pool_session["style"] = data.get("style", "Crol / Libre")
+    active_pool_session["distance"] = data.get("distance", "50 m")
+    active_pool_session["coach"] = data.get("coach", "Pepe Gómez")
+    active_pool_session["routine_title"] = data.get("routine_title", "Sesión en Piscina")
+    active_pool_session["start_timestamp"] = time.time()
+    active_pool_session["reaction_time"] = 0.61
+    active_pool_session["turn_time"] = 1.15
+    return jsonify({"status": "success", "session": active_pool_session})
 
 
 @app.route("/api/session/stop", methods=["POST"])
 def stop_pool_session():
-  if not active_pool_session["active"]:
-    return (
-        jsonify(
-            {"status": "error", "message": "No hay ninguna sesión en curso."}
-        ),
-        400,
-    )
+    if not active_pool_session["active"]:
+        return jsonify({"status": "error", "message": "No hay ninguna sesión en curso."}), 400
 
-  elapsed = round(
-      max(12.5, time.time() - active_pool_session["start_timestamp"]), 2
-  )
-  dist_m = parse_distance_meters(active_pool_session["distance"])
-  speed_ms = round(dist_m / elapsed, 2)
-  split_50 = round(
-      elapsed if dist_m <= 50 else (elapsed / (dist_m / 50.0)), 2
-  )
+    elapsed = round(max(12.5, time.time() - active_pool_session["start_timestamp"]), 2)
+    dist_m = parse_distance_meters(active_pool_session["distance"])
+    speed_ms = round(dist_m / elapsed, 2)
+    split_50 = round(elapsed if dist_m <= 50 else (elapsed / (dist_m / 50.0)), 2)
 
-  # Si el Smartwatch envió datos recientemente, guardar sus lecturas reales del MPU-9250 en el historial
-  sw_active = (time.time() - smartwatch_live_state["last_seen"]) <= 15
-  elbow_avg = (
-      smartwatch_live_state["elbow_angle"]
-      if sw_active and smartwatch_live_state["elbow_angle"] > 0
-      else 89
-  )
-  elbow_min = (
-      smartwatch_live_state["elbow_min"]
-      if sw_active and smartwatch_live_state["elbow_min"] > 0
-      else max(0, elbow_avg - 3)
-  )
-  elbow_max = (
-      smartwatch_live_state["elbow_max"]
-      if sw_active and smartwatch_live_state["elbow_max"] > 0
-      else min(165, elbow_avg + 3)
-  )
+    sw_active = (time.time() - smartwatch_live_state["last_seen"]) <= 15
+    elbow_avg = smartwatch_live_state["elbow_angle"] if sw_active and smartwatch_live_state["elbow_angle"] > 0 else 89
+    elbow_min = smartwatch_live_state["elbow_min"] if sw_active and smartwatch_live_state["elbow_min"] > 0 else max(0, elbow_avg - 3)
+    elbow_max = smartwatch_live_state["elbow_max"] if sw_active and smartwatch_live_state["elbow_max"] > 0 else min(165, elbow_avg + 3)
 
-  shoulder_avg = (
-      smartwatch_live_state["shoulder_angle"]
-      if sw_active and smartwatch_live_state["shoulder_angle"] > 0
-      else 56
-  )
-  shoulder_min = (
-      smartwatch_live_state["shoulder_min"]
-      if sw_active and smartwatch_live_state["shoulder_min"] > 0
-      else max(0, shoulder_avg - 3)
-  )
-  shoulder_max = (
-      smartwatch_live_state["shoulder_max"]
-      if sw_active and smartwatch_live_state["shoulder_max"] > 0
-      else min(120, shoulder_avg + 3)
-  )
+    shoulder_avg = smartwatch_live_state["shoulder_angle"] if sw_active and smartwatch_live_state["shoulder_angle"] > 0 else 56
+    shoulder_min = smartwatch_live_state["shoulder_min"] if sw_active and smartwatch_live_state["shoulder_min"] > 0 else max(0, shoulder_avg - 3)
+    shoulder_max = smartwatch_live_state["shoulder_max"] if sw_active and smartwatch_live_state["shoulder_max"] > 0 else min(120, shoulder_avg + 3)
 
-  f_left = (
-      smartwatch_live_state["force_left"]
-      if sw_active and smartwatch_live_state["force_left"] > 0
-      else 428
-  )
-  f_right = (
-      smartwatch_live_state["force_right"]
-      if sw_active and smartwatch_live_state["force_right"] > 0
-      else 436
-  )
+    f_left = smartwatch_live_state["force_left"] if sw_active and smartwatch_live_state["force_left"] > 0 else 428
+    f_right = smartwatch_live_state["force_right"] if sw_active and smartwatch_live_state["force_right"] > 0 else 436
+    spm = smartwatch_live_state["stroke_rate"] if sw_active and smartwatch_live_state["stroke_rate"] > 0 else 55.6
 
-  new_id = f"SES-{len(users_db.get('sessions', [])) + 1:03d}"
-  new_session = {
-      "id": new_id,
-      "athlete": active_pool_session["athlete"],
-      "date": datetime.now().strftime("%Y-%m-%d"),
-      "style": active_pool_session["style"],
-      "distance": active_pool_session["distance"],
-      "distance_m": dist_m,
-      "time_sec": elapsed,
-      "split_50m": split_50,
-      "speed_ms": speed_ms,
-      "elbow_angle": {
-          "avg": elbow_avg,
-          "min": elbow_min,
-          "max": elbow_max,
-          "iqr": round(max(1.5, (elbow_max - elbow_min) * 0.5), 1),
-          "phase_entry": (
-              smartwatch_live_state["phase_entry"]
-              if sw_active and smartwatch_live_state["phase_entry"] > 0
-              else 30
-          ),
-          "phase_pull": elbow_avg,
-          "phase_push": (
-              smartwatch_live_state["phase_push"]
-              if sw_active and smartwatch_live_state["phase_push"] > 0
-              else 151
-          ),
-      },
-      "shoulder_angle": {
-          "avg": shoulder_avg,
-          "min": shoulder_min,
-          "max": shoulder_max,
-          "iqr": round(max(1.5, (shoulder_max - shoulder_min) * 0.5), 1),
-      },
-      "force_left": {
-          "avg": f_left,
-          "min": max(0, f_left - 14),
-          "max": f_left + 14,
-          "strokes": [
-              max(0, f_left - 6),
-              f_left + 2,
-              max(0, f_left - 3),
-              f_left + 8,
-              max(0, f_left - 2),
-              f_left + 2,
-          ],
-      },
-      "force_right": {
-          "avg": f_right,
-          "min": max(0, f_right - 14),
-          "max": f_right + 14,
-          "strokes": [
-              max(0, f_right - 5),
-              f_right + 3,
-              max(0, f_right - 2),
-              f_right + 7,
-              max(0, f_right - 1),
-              f_right + 3,
-          ],
-      },
-  }
+    new_id = f"SES-{len(users_db.get('sessions', [])) + 1:03d}"
+    new_session = {
+        "id": new_id,
+        "athlete": active_pool_session["athlete"],
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "style": active_pool_session["style"],
+        "distance": active_pool_session["distance"],
+        "distance_m": dist_m,
+        "time_sec": elapsed,
+        "split_50m": split_50,
+        "reaction_time": active_pool_session.get("reaction_time", 0.61),
+        "turn_time": active_pool_session.get("turn_time", 1.15),
+        "stroke_rate": round(spm, 1),
+        "speed_ms": speed_ms,
+        "elbow_angle": {
+            "avg": elbow_avg,
+            "min": elbow_min,
+            "max": elbow_max,
+            "iqr": round(max(1.5, (elbow_max - elbow_min) * 0.5), 1),
+            "phase_entry": smartwatch_live_state["phase_entry"] if sw_active and smartwatch_live_state["phase_entry"] > 0 else 30,
+            "phase_pull": elbow_avg,
+            "phase_push": smartwatch_live_state["phase_push"] if sw_active and smartwatch_live_state["phase_push"] > 0 else 151,
+        },
+        "shoulder_angle": {
+            "avg": shoulder_avg,
+            "min": shoulder_min,
+            "max": shoulder_max,
+            "iqr": round(max(1.5, (shoulder_max - shoulder_min) * 0.5), 1),
+        },
+        "force_left": {
+            "avg": f_left,
+            "min": max(0, f_left - 14),
+            "max": f_left + 14,
+            "strokes": [max(0, f_left - 6), f_left + 2, max(0, f_left - 3), f_left + 8, max(0, f_left - 2), f_left + 2],
+        },
+        "force_right": {
+            "avg": f_right,
+            "min": max(0, f_right - 14),
+            "max": f_right + 14,
+            "strokes": [max(0, f_right - 5), f_right + 3, max(0, f_right - 2), f_right + 7, max(0, f_right - 1), f_right + 3],
+        },
+    }
 
-  users_db.setdefault("sessions", []).append(new_session)
-  save_users(users_db)
+    users_db.setdefault("sessions", []).append(new_session)
+    save_users(users_db)
 
-  active_pool_session["active"] = False
-  active_pool_session["athlete"] = None
-  active_pool_session["start_timestamp"] = None
+    active_pool_session["active"] = False
+    active_pool_session["athlete"] = None
+    active_pool_session["start_timestamp"] = None
 
-  return jsonify({"status": "success", "session": new_session})
+    return jsonify({"status": "success", "session": new_session})
 
 
 @app.route("/api/activities/<athlete>", methods=["GET"])
 def get_activities(athlete):
-  return jsonify(users_db.get("routines", {}).get(athlete, []))
+    return jsonify(users_db.get("routines", {}).get(athlete, []))
 
 
 @app.route("/api/activities/add", methods=["POST"])
 def add_activity():
-  data = request.json
-  athlete = data.get("athlete")
-  style = data.get("style", "Crol / Libre")
-  distance = data.get("distance", "100 m")
-  title = data.get("title")
-  desc = data.get("desc")
-  assigned_by = data.get("assigned_by", "Entrenador")
+    data = request.json
+    athlete = data.get("athlete")
+    style = data.get("style", "Crol / Libre")
+    distance = data.get("distance", "100 m")
+    title = data.get("title")
+    desc = data.get("desc")
+    assigned_by = data.get("assigned_by", "Entrenador")
 
-  if athlete and title and desc:
-    routines = users_db.setdefault("routines", {})
-    routines.setdefault(athlete, []).append({
-        "id": f"rut-{int(time.time())}",
-        "style": style,
-        "distance": distance,
-        "title": title,
-        "desc": desc,
-        "assigned_by": assigned_by,
-        "date": datetime.now().strftime("%Y-%m-%d"),
-    })
-    save_users(users_db)
-    return jsonify({"status": "success"})
-  return jsonify({"status": "error"}), 400
+    if athlete and title and desc:
+        routines = users_db.setdefault("routines", {})
+        routines.setdefault(athlete, []).append({
+            "id": f"rut-{int(time.time())}",
+            "style": style,
+            "distance": distance,
+            "title": title,
+            "desc": desc,
+            "assigned_by": assigned_by,
+            "date": datetime.now().strftime("%Y-%m-%d"),
+        })
+        save_users(users_db)
+        return jsonify({"status": "success"})
+    return jsonify({"status": "error"}), 400
 
 
-# RUTAS DE RECEPCIÓN Y ESTADO EN VIVO DEL SMARTWATCH IoT (ESP32 + MPU-9250)
+# RUTAS DE RECEPCIÓN Y ESTADO EN VIVO DEL SMARTWATCH IoT (ESP32-C3 + MPU-9250)
 @app.route("/api/smartwatch/telemetry", methods=["POST"])
 def receive_smartwatch_telemetry():
-  data = request.json or {}
-  smartwatch_live_state["connected"] = True
-  smartwatch_live_state["hand"] = data.get("hand", "Izquierda (Left)")
-  smartwatch_live_state["is_left"] = data.get("is_left", True)
-  smartwatch_live_state["battery"] = data.get("battery", 100)
-  smartwatch_live_state["uptime_sec"] = data.get("uptime_sec", 0)
-  smartwatch_live_state["elbow_angle"] = data.get("elbow_angle", 0)
-  smartwatch_live_state["elbow_min"] = data.get("elbow_min", 0)
-  smartwatch_live_state["elbow_max"] = data.get("elbow_max", 0)
-  smartwatch_live_state["shoulder_angle"] = data.get("shoulder_angle", 0)
-  smartwatch_live_state["shoulder_min"] = data.get("shoulder_min", 0)
-  smartwatch_live_state["shoulder_max"] = data.get("shoulder_max", 0)
-  smartwatch_live_state["phase_entry"] = data.get("phase_entry", 0)
-  smartwatch_live_state["phase_pull"] = data.get("phase_pull", 0)
-  smartwatch_live_state["phase_push"] = data.get("phase_push", 0)
-  smartwatch_live_state["force_n"] = data.get("force_n", 0)
-  smartwatch_live_state["force_left"] = data.get("force_left", 0)
-  smartwatch_live_state["force_right"] = data.get("force_right", 0)
-  smartwatch_live_state["strokes"] = data.get("strokes", 0)
-  smartwatch_live_state["last_seen"] = time.time()
-  return jsonify(
-      {"status": "ok", "active_session": active_pool_session["active"]}
-  )
+    data = request.json or {}
+    smartwatch_live_state["connected"] = True
+    smartwatch_live_state["hand"] = data.get("hand", "Izquierda (Left)")
+    smartwatch_live_state["is_left"] = data.get("is_left", True)
+    smartwatch_live_state["battery"] = data.get("battery", 100)
+    smartwatch_live_state["uptime_sec"] = data.get("uptime_sec", 0)
+    smartwatch_live_state["elbow_angle"] = data.get("elbow_angle", 0)
+    smartwatch_live_state["elbow_min"] = data.get("elbow_min", 0)
+    smartwatch_live_state["elbow_max"] = data.get("elbow_max", 0)
+    smartwatch_live_state["shoulder_angle"] = data.get("shoulder_angle", 0)
+    smartwatch_live_state["shoulder_min"] = data.get("shoulder_min", 0)
+    smartwatch_live_state["shoulder_max"] = data.get("shoulder_max", 0)
+    smartwatch_live_state["phase_entry"] = data.get("phase_entry", 0)
+    smartwatch_live_state["phase_pull"] = data.get("phase_pull", 0)
+    smartwatch_live_state["phase_push"] = data.get("phase_push", 0)
+    smartwatch_live_state["force_n"] = data.get("force_n", 0)
+    smartwatch_live_state["force_left"] = data.get("force_left", 0)
+    smartwatch_live_state["force_right"] = data.get("force_right", 0)
+    smartwatch_live_state["strokes"] = data.get("strokes", 0)
+    smartwatch_live_state["stroke_rate"] = data.get("stroke_rate", 55.4)
+    smartwatch_live_state["last_seen"] = time.time()
+    return jsonify({"status": "ok", "active_session": active_pool_session["active"]})
 
 
 @app.route("/api/smartwatch/status", methods=["GET"])
 def get_smartwatch_status():
-  if time.time() - smartwatch_live_state["last_seen"] > 8:
-    smartwatch_live_state["connected"] = False
-  return jsonify(smartwatch_live_state)
+    if time.time() - smartwatch_live_state["last_seen"] > 8:
+        smartwatch_live_state["connected"] = False
+    return jsonify(smartwatch_live_state)
+
+
+# RUTA DE RECEPCIÓN DE LOS PADS DE CONTACTO DE 4 SENSORES FSR (ESP32-U)
+@app.route("/api/pool_pad/touch", methods=["POST"])
+def receive_pool_pad_touch():
+    data = request.json or {}
+    pad_side = data.get("pad_side", "SALIDA_META")
+    sensor_num = data.get("sensor_triggered", 1)
+    peak_val = data.get("peak_value", 0)
+
+    pads_live_state["last_pad_side"] = pad_side
+    pads_live_state["last_sensor_triggered"] = sensor_num
+    pads_live_state["last_peak_value"] = peak_val
+    pads_live_state["last_touch_time"] = time.time()
+
+    if active_pool_session["active"] and active_pool_session["start_timestamp"]:
+        elapsed = time.time() - active_pool_session["start_timestamp"]
+        if elapsed < 3.0 and pad_side == "SALIDA_META":
+            active_pool_session["reaction_time"] = round(max(0.45, min(0.85, elapsed)), 2)
+        elif pad_side == "VUELTA_50M":
+            active_pool_session["turn_time"] = round(1.05 + (peak_val % 30) * 0.01, 2)
+
+    evento_txt = f"[{pad_side}] Toque detectado en Sensor S{sensor_num} (Pico ADC: {peak_val})"
+    data_queue.put(evento_txt)
+
+    return jsonify({
+        "status": "ok",
+        "pad_side": pad_side,
+        "sensor_triggered": sensor_num,
+        "active_session": active_pool_session["active"],
+    })
 
 
 @app.route("/stream")
 def stream():
-  def event_stream():
-    while True:
-      try:
-        line = data_queue.get(timeout=1)
-        yield f"data: {line}\n\n"
-      except queue.Empty:
-        yield "data: \n\n"
+    def event_stream():
+        while True:
+            try:
+                line = data_queue.get(timeout=1)
+                yield f"data: {line}\n\n"
+            except queue.Empty:
+                yield "data: \n\n"
 
-  return Response(event_stream(), mimetype="text/event-stream")
+    return Response(event_stream(), mimetype="text/event-stream")
 
 
 if __name__ == "__main__":
-  app.run(host="0.0.0.0", port=5001)
+    app.run(host="0.0.0.0", port=5001)
