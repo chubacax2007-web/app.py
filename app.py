@@ -401,7 +401,6 @@ def load_users():
                     for default_u in default_data[role_key]:
                         if default_u["email"].lower() not in existing_emails:
                             loaded[role_key].append(default_u)
-                # Garantizar que todas las sesiones existentes tengan reaction_time, turn_time y stroke_rate
                 for s in loaded.get("sessions", []):
                     if "reaction_time" not in s:
                         s["reaction_time"] = 0.62
@@ -463,6 +462,8 @@ HTML_TEMPLATE = """
     <!-- Librerías oficiales para generación de Reporte PDF (Fig. 58) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+    <!-- Librería oficial para exportar Excel (.xlsx) con diseño de Tablas, Bordes y Colores igual al PDF -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
     <style>
         body { background-color: #f8fafc; color: #0f172a; font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
         .clean-card { background: #ffffff; border: 1px solid #e2e8f0; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.04); }
@@ -511,7 +512,7 @@ HTML_TEMPLATE = """
                 <p class="text-[11px] text-sky-200 mt-1 font-semibold">Telemetría Piscina 50m & Smartwatch MPU-9250</p>
             </div>
             <div class="space-y-3.5 pb-4">
-                <p class="text-xs text-slate-200">Control biomecánico de brazada con punto cero (0°), paneles de impacto FSR (4 sensores) y reportes PDF/CSV.</p>
+                <p class="text-xs text-slate-200">Control biomecánico de brazada con punto cero (0°), paneles de impacto FSR (4 sensores) y reportes en Tablas PDF/Excel.</p>
                 <button onclick="switchAuthMode('login')" class="w-full bg-white text-slate-950 font-extrabold py-3.5 rounded-full text-xs shadow-xl hover:bg-slate-100">
                     Iniciar Sesión
                 </button>
@@ -695,7 +696,7 @@ HTML_TEMPLATE = """
     <!-- CONTENEDOR PRINCIPAL -->
     <div class="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 space-y-6">
 
-        <!-- 1. HISTORIAL CONSULTABLE POR SESIÓN, EXPORTACIÓN PDF/CSV Y COMPARADOR (PROGRESS) -->
+        <!-- 1. HISTORIAL CONSULTABLE POR SESIÓN, EXPORTACIÓN PDF/EXCEL Y COMPARADOR (PROGRESS) -->
         <div id="tab-content-progress" class="space-y-6">
             <div class="grid grid-cols-2 md:grid-cols-6 gap-4">
                 <div class="clean-card p-4 rounded-2xl">
@@ -728,9 +729,9 @@ HTML_TEMPLATE = """
                 <div class="flex flex-wrap items-center justify-between gap-4 border-b pb-3">
                     <div>
                         <h3 class="text-sm font-black text-slate-900 flex items-center gap-2">
-                            <i data-lucide="sliders" class="w-4 h-4 text-sky-600"></i> Explorador, Comparador y Exportación de Reportes
+                            <i data-lucide="sliders" class="w-4 h-4 text-sky-600"></i> Explorador, Comparador y Exportación en Tablas (PDF / Excel)
                         </h3>
-                        <p class="text-xs text-slate-500">Filtra sesiones o exporta el Reporte Técnico en PDF y los Datos Crudos en CSV.</p>
+                        <p class="text-xs text-slate-500">Filtra sesiones o descarga el Reporte Técnico en PDF y en Tabla Excel (.xlsx) con diseño de tablas y bordes.</p>
                     </div>
                     <div class="flex flex-wrap items-end gap-2.5">
                         <div>
@@ -756,10 +757,10 @@ HTML_TEMPLATE = """
                         <button onclick="exportSessionPDF()" class="bg-rose-600 hover:bg-rose-700 text-white font-black px-3.5 py-2 rounded-xl text-xs shadow flex items-center gap-1.5">
                             <i data-lucide="file-text" class="w-4 h-4"></i> Exportar Reporte PDF
                         </button>
-                        <!-- Botón Exportar CSV Datos Crudos (Entregable B.6) -->
-                        <a href="/api/export/csv" download="datos_crudos_swiitroom.csv" class="bg-emerald-600 hover:bg-emerald-700 text-white font-black px-3.5 py-2 rounded-xl text-xs shadow flex items-center gap-1.5">
-                            <i data-lucide="download" class="w-4 h-4"></i> Exportar CSV
-                        </a>
+                        <!-- Botón Exportar Tabla Excel (.xlsx) con el mismo formato de tablas que el PDF -->
+                        <button onclick="exportSessionExcelTable()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-black px-3.5 py-2 rounded-xl text-xs shadow flex items-center gap-1.5">
+                            <i data-lucide="table" class="w-4 h-4"></i> Exportar Tabla Excel (.xlsx)
+                        </button>
                     </div>
                 </div>
 
@@ -770,7 +771,7 @@ HTML_TEMPLATE = """
                     <div id="comparison-summary-card" class="lg:col-span-4 bg-slate-50 p-4 rounded-2xl border space-y-2 text-xs">
                         <div class="font-black text-slate-800 uppercase text-[11px]">Resumen Técnico y Cinemático</div>
                         <div id="comparison-summary-body" class="space-y-1.5 text-slate-600">
-                            Selecciona una sesión de la tabla inferior para inspeccionar sus métricas o exportar su PDF.
+                            Selecciona una sesión de la tabla inferior para inspeccionar sus métricas o exportar su PDF / Tabla Excel.
                         </div>
                     </div>
                 </div>
@@ -792,7 +793,7 @@ HTML_TEMPLATE = """
                                 <th class="p-3">Frec. Brazada</th>
                                 <th class="p-3">Codo / Hombro</th>
                                 <th class="p-3">Fuerza (Izq/Der)</th>
-                                <th class="p-3 text-right">Reporte</th>
+                                <th class="p-3 text-right">Descargar Tablas</th>
                             </tr>
                         </thead>
                         <tbody id="sessions-history-tbody" class="divide-y"></tbody>
@@ -815,6 +816,9 @@ HTML_TEMPLATE = """
                         <span id="smartwatch-badge-live" class="bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full text-xs font-bold">● MPU-9250 9-Axis & FSR Activos</span>
                         <button onclick="exportSessionPDF()" class="bg-rose-600 hover:bg-rose-700 text-white font-black px-3 py-1 rounded-full text-xs flex items-center gap-1">
                             <i data-lucide="file-down" class="w-3.5 h-3.5"></i> PDF
+                        </button>
+                        <button onclick="exportSessionExcelTable()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-black px-3 py-1 rounded-full text-xs flex items-center gap-1">
+                            <i data-lucide="table" class="w-3.5 h-3.5"></i> Excel
                         </button>
                     </div>
                 </div>
@@ -1228,7 +1232,7 @@ HTML_TEMPLATE = """
             const s = selectedSessionObj || { athlete: activeAthlete || 'Mario Peinado', elbow_angle: { avg: 84 }, force_left: { avg: 410 }, force_right: { avg: 448 } };
             showNotificationAlert(
                 "ALERTA TÉCNICA & TELEMETRÍA IoT",
-                ` Umbral Crítico Detectado — ${s.athlete}`,
+                `Umbral Crítico Detectado — ${s.athlete}`,
                 `Asimetría de fuerza de tracción detectada (${s.force_left.avg} N Izq vs. ${s.force_right.avg} N Der) y caída de codo en fase de agarre (${s.elbow_angle.avg}° < 86° recomendado).`
             );
         }
@@ -1252,7 +1256,6 @@ HTML_TEMPLATE = """
             const { jsPDF } = window.jspdf;
             const doc = new jsPDF();
 
-            // Encabezado Institucional
             doc.setFillColor(2, 132, 199);
             doc.rect(0, 0, 210, 34, 'F');
             doc.setTextColor(255, 255, 255);
@@ -1263,7 +1266,6 @@ HTML_TEMPLATE = """
             doc.setFont("helvetica", "normal");
             doc.text(`Sistema IoT de Evaluacion Tecnica en Natacion | ID Sesion: ${targetSession.id} | Fecha: ${targetSession.date}`, 14, 25);
 
-            // Datos Generales del Nadador
             doc.setTextColor(15, 23, 42);
             doc.setFontSize(12);
             doc.setFont("helvetica", "bold");
@@ -1283,7 +1285,6 @@ HTML_TEMPLATE = """
                 headStyles: { fillColor: [3, 105, 161] }
             });
 
-            // Desempeño Cronométrico y Frecuencia
             doc.setFontSize(12);
             doc.setFont("helvetica", "bold");
             doc.text("2. Metricas Cronometricas y Cinematicas (Nodos de Contacto FSR)", 14, doc.lastAutoTable.finalY + 12);
@@ -1303,7 +1304,6 @@ HTML_TEMPLATE = """
                 headStyles: { fillColor: [5, 150, 105] }
             });
 
-            // Biomecánica Articular y Fuerza (Smartwatch MPU-9250)
             doc.setFontSize(12);
             doc.setFont("helvetica", "bold");
             doc.text("3. Analisis Biomecanico Articular y Propulsivo (Wearable MPU-9250)", 14, doc.lastAutoTable.finalY + 12);
@@ -1325,7 +1325,6 @@ HTML_TEMPLATE = """
                 headStyles: { fillColor: [79, 70, 229] }
             });
 
-            // Diagnóstico automático
             doc.setFontSize(11);
             doc.setFont("helvetica", "bold");
             doc.text("4. Diagnostico Tecnico Automatizado:", 14, doc.lastAutoTable.finalY + 12);
@@ -1335,12 +1334,242 @@ HTML_TEMPLATE = """
             const splitDiag = doc.splitTextToSize(diagText, 182);
             doc.text(splitDiag, 14, doc.lastAutoTable.finalY + 19);
 
-            // Pie de página
             doc.setFontSize(8);
             doc.setTextColor(100, 116, 139);
             doc.text("Generado automaticamente por la plataforma SWiiTroom IoT - Capitulo III (Validacion Experimental)", 14, 285);
 
             doc.save(`Reporte_SWiiTroom_${targetSession.id}_${targetSession.athlete.replace(/\s+/g, '_')}.pdf`);
+        }
+
+        // GENERADOR DE EXCEL (.XLSX) CON FORMATO DE TABLAS, BORDES Y COLORES IGUAL AL PDF
+        function exportSessionExcelTable(sessionId) {
+            let targetSession = selectedSessionObj;
+            if (sessionId) {
+                const found = allSessionsList.find(s => s.id === sessionId);
+                if (found) targetSession = found;
+            }
+            if (!targetSession) {
+                const athleteSessions = allSessionsList.filter(s => s.athlete === activeAthlete);
+                targetSession = athleteSessions[athleteSessions.length - 1] || allSessionsList[0];
+            }
+            if (!targetSession) {
+                alert("No hay sesión disponible para exportar a Excel.");
+                return;
+            }
+
+            if (typeof XLSX === 'undefined') {
+                window.location.href = '/api/export/excel';
+                return;
+            }
+
+            const borderThin = {
+                top: { style: "thin", color: { rgb: "CBD5E1" } },
+                bottom: { style: "thin", color: { rgb: "CBD5E1" } },
+                left: { style: "thin", color: { rgb: "CBD5E1" } },
+                right: { style: "thin", color: { rgb: "CBD5E1" } }
+            };
+
+            const styleBannerTitle = {
+                font: { name: "Arial", sz: 14, bold: true, color: { rgb: "FFFFFF" } },
+                fill: { fgColor: { rgb: "0284C7" } },
+                alignment: { horizontal: "left", vertical: "center" }
+            };
+            const styleBannerSub = {
+                font: { name: "Arial", sz: 10, italic: true, color: { rgb: "E0F2FE" } },
+                fill: { fgColor: { rgb: "0369A1" } },
+                alignment: { horizontal: "left", vertical: "center" }
+            };
+            const styleSectionTitle = {
+                font: { name: "Arial", sz: 11, bold: true, color: { rgb: "0F172A" } },
+                fill: { fgColor: { rgb: "E2E8F0" } },
+                alignment: { horizontal: "left", vertical: "center" },
+                border: borderThin
+            };
+            const makeHeaderStyle = (hexColor) => ({
+                font: { name: "Arial", sz: 10, bold: true, color: { rgb: "FFFFFF" } },
+                fill: { fgColor: { rgb: hexColor } },
+                alignment: { horizontal: "center", vertical: "center", wrapText: true },
+                border: borderThin
+            });
+            const makeDataStyle = (isEven, isBold = false, align = "center") => ({
+                font: { name: "Arial", sz: 10, bold: isBold, color: { rgb: "0F172A" } },
+                fill: { fgColor: { rgb: isEven ? "F8FAFC" : "FFFFFF" } },
+                alignment: { horizontal: align, vertical: "center", wrapText: true },
+                border: borderThin
+            });
+
+            const asym = Math.abs(targetSession.force_left.avg - targetSession.force_right.avg);
+            const asymPct = ((asym / Math.max(1, targetSession.force_right.avg)) * 100).toFixed(1);
+
+            // =========================================================================
+            // HOJA 1: REPORTE DE LA SESIÓN EN TABLAS (IDÉNTICO AL PDF)
+            // =========================================================================
+            const ws1Data = [
+                ["SWiiTroom - Reporte Biomecánico y Cronométrico (Formato Tabla)", "", "", "", "", ""],
+                [`Sistema IoT de Evaluación Técnica en Natación | ID Sesión: ${targetSession.id} | Fecha: ${targetSession.date}`, "", "", "", "", ""],
+                ["", "", "", "", "", ""],
+                ["1. Información General de la Prueba", "", "", "", "", ""],
+                ["Atleta Evaluado", "Estilo Oficial", "Distancia", "Fecha de Registro", "ID Sesión", "Estado de Validación"],
+                [targetSession.athlete, targetSession.style, targetSession.distance, targetSession.date, targetSession.id, "Verificado (IMU 9-DoF + Pads 4xFSR)"],
+                ["", "", "", "", "", ""],
+                ["2. Métricas Cronométricas y Cinemáticas (Nodos de Contacto FSR)", "", "", "", "", ""],
+                ["Tiempo Total (s)", "Parcial 50m (s)", "Tiempo Reacción (s)", "Tiempo Vuelta (s)", "Velocidad Media (m/s)", "Frec. Brazada (braz/min)"],
+                [
+                    `${targetSession.time_sec.toFixed(2)} s`,
+                    `${targetSession.split_50m.toFixed(2)} s`,
+                    `${(targetSession.reaction_time || 0.62).toFixed(2)} s`,
+                    `${(targetSession.turn_time || 1.15).toFixed(2)} s`,
+                    `${targetSession.speed_ms.toFixed(2)} m/s`,
+                    `${(targetSession.stroke_rate || 55.4).toFixed(1)} spm`
+                ],
+                ["", "", "", "", "", ""],
+                ["3. Análisis Biomecánico Articular y Propulsivo (Wearable MPU-9250)", "", "", "", "", ""],
+                ["Parámetro Biomecánico", "Promedio", "Mínimo", "Máximo", "Dispersión (IQR)", "Referencia Técnica"],
+                ["Ángulo de Codo (Tracción EVF)", `${targetSession.elbow_angle.avg}°`, `${targetSession.elbow_angle.min}°`, `${targetSession.elbow_angle.max}°`, `${targetSession.elbow_angle.iqr}°`, "Óptimo: 85° - 95°"],
+                ["Ángulo de Hombro (Abducción)", `${targetSession.shoulder_angle.avg}°`, `${targetSession.shoulder_angle.min}°`, `${targetSession.shoulder_angle.max}°`, `${targetSession.shoulder_angle.iqr}°`, "Óptimo: 50° - 62°"],
+                ["Ángulos por Fase (Entrada / Tracción / Empuje)", `${targetSession.elbow_angle.phase_entry}°`, `${targetSession.elbow_angle.phase_pull}°`, `${targetSession.elbow_angle.phase_push}°`, "-", "3 Fases de Brazada"],
+                ["Fuerza Propulsiva Brazo Izquierdo", `${targetSession.force_left.avg} N`, `${targetSession.force_left.min} N`, `${targetSession.force_left.max} N`, "-", "Filtro IQR Aplicado"],
+                ["Fuerza Propulsiva Brazo Derecho", `${targetSession.force_right.avg} N`, `${targetSession.force_right.min} N`, `${targetSession.force_right.max} N`, "-", `Asimetría: ${asymPct}%`],
+                ["", "", "", "", "", ""],
+                ["4. Diagnóstico Técnico Automatizado", "", "", "", "", ""],
+                [`El atleta ${targetSession.athlete} registró una velocidad media de ${targetSession.speed_ms.toFixed(2)} m/s con frecuencia de ${(targetSession.stroke_rate || 55.4).toFixed(1)} braz/min, reacción de ${(targetSession.reaction_time || 0.62).toFixed(2)} s y vuelta de ${(targetSession.turn_time || 1.15).toFixed(2)} s.`, "", "", "", "", ""]
+            ];
+
+            const ws1 = XLSX.utils.aoa_to_sheet(ws1Data);
+            ws1["!merges"] = [
+                { s: { r: 0, c: 0 }, e: { r: 0, c: 5 } },
+                { s: { r: 1, c: 0 }, e: { r: 1, c: 5 } },
+                { s: { r: 3, c: 0 }, e: { r: 3, c: 5 } },
+                { s: { r: 7, c: 0 }, e: { r: 7, c: 5 } },
+                { s: { r: 11, c: 0 }, e: { r: 11, c: 5 } },
+                { s: { r: 19, c: 0 }, e: { r: 19, c: 5 } },
+                { s: { r: 20, c: 0 }, e: { r: 20, c: 5 } }
+            ];
+            ws1["!cols"] = [
+                { wch: 38 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 20 }, { wch: 28 }
+            ];
+
+            for (let c = 0; c <= 5; c++) {
+                if (ws1[XLSX.utils.encode_cell({ r: 0, c })]) ws1[XLSX.utils.encode_cell({ r: 0, c })].s = styleBannerTitle;
+                if (ws1[XLSX.utils.encode_cell({ r: 1, c })]) ws1[XLSX.utils.encode_cell({ r: 1, c })].s = styleBannerSub;
+                [3, 7, 11, 19].forEach(rIdx => {
+                    const ref = XLSX.utils.encode_cell({ r: rIdx, c });
+                    if (ws1[ref]) ws1[ref].s = styleSectionTitle;
+                });
+                if (ws1[XLSX.utils.encode_cell({ r: 4, c })]) ws1[XLSX.utils.encode_cell({ r: 4, c })].s = makeHeaderStyle("0369A1");
+                if (ws1[XLSX.utils.encode_cell({ r: 5, c })]) ws1[XLSX.utils.encode_cell({ r: 5, c })].s = makeDataStyle(false, c === 0);
+                if (ws1[XLSX.utils.encode_cell({ r: 8, c })]) ws1[XLSX.utils.encode_cell({ r: 8, c })].s = makeHeaderStyle("059669");
+                if (ws1[XLSX.utils.encode_cell({ r: 9, c })]) ws1[XLSX.utils.encode_cell({ r: 9, c })].s = makeDataStyle(true, true);
+                if (ws1[XLSX.utils.encode_cell({ r: 12, c })]) ws1[XLSX.utils.encode_cell({ r: 12, c })].s = makeHeaderStyle("4F46E5");
+                for (let r = 13; r <= 17; r++) {
+                    const ref = XLSX.utils.encode_cell({ r, c });
+                    if (ws1[ref]) ws1[ref].s = makeDataStyle(r % 2 === 0, c === 0, c === 0 ? "left" : "center");
+                }
+                if (ws1[XLSX.utils.encode_cell({ r: 20, c })]) ws1[XLSX.utils.encode_cell({ r: 20, c })].s = makeDataStyle(false, false, "left");
+            }
+
+            // =========================================================================
+            // HOJA 2: TABLA MAESTRA COMPLETA DE TODAS LAS SESIONES
+            // =========================================================================
+            const ws2Headers = [
+                "ID Sesión", "Atleta Evaluado", "Fecha", "Estilo Oficial", "Distancia (m)",
+                "Tiempo Total (s)", "Parcial 50m (s)", "T. Reacción (s)", "T. Vuelta (s)",
+                "Velocidad (m/s)", "Frecuencia (spm)", "Codo Prom (°)", "Codo Mín (°)",
+                "Codo Máx (°)", "Codo IQR (°)", "Hombro Prom (°)", "Fuerza Izq (N)", "Fuerza Der (N)"
+            ];
+
+            const ws2Data = [
+                ["SWiiTroom - Tabla General Consolidada de Sesiones Biomecánicas y Cronométricas", ...Array(17).fill("")],
+                ws2Headers
+            ];
+
+            allSessionsList.forEach(s => {
+                ws2Data.push([
+                    s.id,
+                    s.athlete,
+                    s.date,
+                    s.style,
+                    s.distance_m,
+                    Number(s.time_sec.toFixed(2)),
+                    Number(s.split_50m.toFixed(2)),
+                    Number((s.reaction_time || 0.62).toFixed(2)),
+                    Number((s.turn_time || 1.15).toFixed(2)),
+                    Number(s.speed_ms.toFixed(2)),
+                    Number((s.stroke_rate || 55.4).toFixed(1)),
+                    s.elbow_angle.avg,
+                    s.elbow_angle.min,
+                    s.elbow_angle.max,
+                    s.elbow_angle.iqr,
+                    s.shoulder_angle.avg,
+                    s.force_left.avg,
+                    s.force_right.avg
+                ]);
+            });
+
+            // Fila resumen de promedios al final de la tabla
+            const n = Math.max(1, allSessionsList.length);
+            const avgCol = (fn) => Number((allSessionsList.reduce((acc, s) => acc + fn(s), 0) / n).toFixed(2));
+            ws2Data.push([
+                "PROMEDIO GENERAL",
+                `${allSessionsList.length} Sesiones`,
+                "-",
+                "Todos",
+                avgCol(s => s.distance_m || 50),
+                avgCol(s => s.time_sec),
+                avgCol(s => s.split_50m),
+                avgCol(s => s.reaction_time || 0.62),
+                avgCol(s => s.turn_time || 1.15),
+                avgCol(s => s.speed_ms),
+                avgCol(s => s.stroke_rate || 55.4),
+                avgCol(s => s.elbow_angle.avg),
+                avgCol(s => s.elbow_angle.min),
+                avgCol(s => s.elbow_angle.max),
+                avgCol(s => s.elbow_angle.iqr),
+                avgCol(s => s.shoulder_angle.avg),
+                avgCol(s => s.force_left.avg),
+                avgCol(s => s.force_right.avg)
+            ]);
+
+            const ws2 = XLSX.utils.aoa_to_sheet(ws2Data);
+            ws2["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 17 } }];
+            ws2["!cols"] = [
+                { wch: 16 }, { wch: 20 }, { wch: 13 }, { wch: 16 }, { wch: 14 },
+                { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 14 }, { wch: 15 },
+                { wch: 16 }, { wch: 14 }, { wch: 13 }, { wch: 13 }, { wch: 13 },
+                { wch: 16 }, { wch: 15 }, { wch: 15 }
+            ];
+
+            for (let c = 0; c < 18; c++) {
+                const topRef = XLSX.utils.encode_cell({ r: 0, c });
+                if (ws2[topRef]) ws2[topRef].s = styleBannerTitle;
+
+                const headRef = XLSX.utils.encode_cell({ r: 1, c });
+                if (ws2[headRef]) ws2[headRef].s = makeHeaderStyle("0284C7");
+
+                for (let r = 2; r < ws2Data.length - 1; r++) {
+                    const cellRef = XLSX.utils.encode_cell({ r, c });
+                    if (ws2[cellRef]) {
+                        ws2[cellRef].s = makeDataStyle(r % 2 === 0, c === 0, c <= 3 ? "left" : "center");
+                    }
+                }
+
+                const lastRow = ws2Data.length - 1;
+                const footRef = XLSX.utils.encode_cell({ r: lastRow, c });
+                if (ws2[footRef]) {
+                    ws2[footRef].s = {
+                        font: { name: "Arial", sz: 10, bold: true, color: { rgb: "0F172A" } },
+                        fill: { fgColor: { rgb: "E0F2FE" } },
+                        alignment: { horizontal: c <= 3 ? "left" : "center", vertical: "center" },
+                        border: borderThin
+                    };
+                }
+            }
+
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws1, "Reporte_Ficha_Tecnica");
+            XLSX.utils.book_append_sheet(wb, ws2, "Tabla_General_Sesiones");
+
+            XLSX.writeFile(wb, `Tabla_SWiiTroom_${targetSession.id}_${targetSession.athlete.replace(/\s+/g, '_')}.xlsx`);
         }
 
         // SINCRONIZACIÓN EN VIVO CON EL SMARTWATCH ESP32 + MPU-9250 CALIBRADO A 0°
@@ -1365,7 +1594,6 @@ HTML_TEMPLATE = """
                     spmEl.textContent = `${sw.stroke_rate.toFixed(1)} braz/min`;
                 }
 
-                // Disparar alerta automática si la batería baja al 20% o menos
                 if (sw.connected && sw.battery <= 20 && !alertAlreadyShownBattery) {
                     alertAlreadyShownBattery = true;
                     showNotificationAlert(
@@ -1533,9 +1761,12 @@ HTML_TEMPLATE = """
                     <td class="p-3 font-mono font-bold text-emerald-700">${(s.stroke_rate || 55.4).toFixed(1)} spm</td>
                     <td class="p-3 font-bold">${s.elbow_angle.avg}° / ${s.shoulder_angle.avg}°</td>
                     <td class="p-3 font-bold">${s.force_left.avg}N / ${s.force_right.avg}N</td>
-                    <td class="p-3 text-right space-x-1">
+                    <td class="p-3 text-right space-x-1 whitespace-nowrap">
                         <button onclick="event.stopPropagation(); exportSessionPDF('${s.id}')" class="bg-rose-100 hover:bg-rose-200 text-rose-800 px-2.5 py-1 rounded-lg font-bold text-[11px]">
                             PDF
+                        </button>
+                        <button onclick="event.stopPropagation(); exportSessionExcelTable('${s.id}')" class="bg-emerald-100 hover:bg-emerald-200 text-emerald-800 px-2.5 py-1 rounded-lg font-bold text-[11px]">
+                            Excel
                         </button>
                     </td>
                 </tr>
@@ -2122,10 +2353,75 @@ def get_sessions():
     return jsonify(users_db.get("sessions", []))
 
 
+# RUTA DE RESPALDO PARA TABLA EXCEL CON ESTILOS HTML/XLS
+@app.route("/api/export/excel", methods=["GET"])
+def export_sessions_excel_table():
+    rows_html = ""
+    for idx, s in enumerate(users_db.get("sessions", [])):
+        bg = "#f8fafc" if idx % 2 == 0 else "#ffffff"
+        rows_html += f"""
+        <tr style="background-color:{bg}; text-align:center;">
+            <td style="border:1px solid #cbd5e1; padding:6px; font-weight:bold;">{s.get('id')}</td>
+            <td style="border:1px solid #cbd5e1; padding:6px; text-align:left;">{s.get('athlete')}</td>
+            <td style="border:1px solid #cbd5e1; padding:6px;">{s.get('date')}</td>
+            <td style="border:1px solid #cbd5e1; padding:6px;">{s.get('style')}</td>
+            <td style="border:1px solid #cbd5e1; padding:6px;">{s.get('distance_m')} m</td>
+            <td style="border:1px solid #cbd5e1; padding:6px; font-weight:bold;">{s.get('time_sec'):.2f} s</td>
+            <td style="border:1px solid #cbd5e1; padding:6px;">{s.get('split_50m'):.2f} s</td>
+            <td style="border:1px solid #cbd5e1; padding:6px;">{s.get('reaction_time', 0.62):.2f} s</td>
+            <td style="border:1px solid #cbd5e1; padding:6px;">{s.get('turn_time', 1.15):.2f} s</td>
+            <td style="border:1px solid #cbd5e1; padding:6px;">{s.get('speed_ms'):.2f} m/s</td>
+            <td style="border:1px solid #cbd5e1; padding:6px;">{s.get('stroke_rate', 55.4):.1f} spm</td>
+            <td style="border:1px solid #cbd5e1; padding:6px;">{s.get('elbow_angle', {}).get('avg')}°</td>
+            <td style="border:1px solid #cbd5e1; padding:6px;">{s.get('shoulder_angle', {}).get('avg')}°</td>
+            <td style="border:1px solid #cbd5e1; padding:6px;">{s.get('force_left', {}).get('avg')} N</td>
+            <td style="border:1px solid #cbd5e1; padding:6px;">{s.get('force_right', {}).get('avg')} N</td>
+        </tr>
+        """
+
+    excel_html = f"""
+    <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+    <head><meta charset="UTF-8"></head>
+    <body>
+        <table style="border-collapse:collapse; font-family:Arial, sans-serif; font-size:10pt;">
+            <tr>
+                <td colspan="15" style="background-color:#0284c7; color:#ffffff; font-weight:bold; font-size:14pt; padding:10px;">
+                    SWiiTroom - Tabla Consolidada de Sesiones Biomecánicas y Cronométricas
+                </td>
+            </tr>
+            <tr style="background-color:#0369a1; color:#ffffff; font-weight:bold; text-align:center;">
+                <th style="border:1px solid #cbd5e1; padding:8px;">ID Sesión</th>
+                <th style="border:1px solid #cbd5e1; padding:8px;">Atleta</th>
+                <th style="border:1px solid #cbd5e1; padding:8px;">Fecha</th>
+                <th style="border:1px solid #cbd5e1; padding:8px;">Estilo</th>
+                <th style="border:1px solid #cbd5e1; padding:8px;">Distancia</th>
+                <th style="border:1px solid #cbd5e1; padding:8px;">Tiempo Total</th>
+                <th style="border:1px solid #cbd5e1; padding:8px;">Parcial 50m</th>
+                <th style="border:1px solid #cbd5e1; padding:8px;">T. Reacción</th>
+                <th style="border:1px solid #cbd5e1; padding:8px;">T. Vuelta</th>
+                <th style="border:1px solid #cbd5e1; padding:8px;">Velocidad</th>
+                <th style="border:1px solid #cbd5e1; padding:8px;">Frec. Brazada</th>
+                <th style="border:1px solid #cbd5e1; padding:8px;">Codo Prom.</th>
+                <th style="border:1px solid #cbd5e1; padding:8px;">Hombro Prom.</th>
+                <th style="border:1px solid #cbd5e1; padding:8px;">Fuerza Izq.</th>
+                <th style="border:1px solid #cbd5e1; padding:8px;">Fuerza Der.</th>
+            </tr>
+            {rows_html}
+        </table>
+    </body>
+    </html>
+    """
+    return Response(
+        excel_html,
+        mimetype="application/vnd.ms-excel",
+        headers={"Content-Disposition": "attachment; filename=Tabla_Sesiones_SWiiTroom.xls"}
+    )
+
+
 @app.route("/api/export/csv", methods=["GET"])
 def export_sessions_csv():
     output = io.StringIO()
-    writer = csv.writer(output)
+    writer = csv.writer(output, delimiter=";")
     writer.writerow([
         "session_id", "athlete", "date", "style", "distance_m",
         "time_sec", "split_50m_sec", "reaction_time_sec", "turn_time_sec",
